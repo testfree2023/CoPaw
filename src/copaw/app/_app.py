@@ -111,7 +111,7 @@ async def lifespan(app: FastAPI):  # pylint: disable=too-many-statements
             # Set for API router
             from .routers.rules import set_rule_manager as set_api_rule_manager
             set_api_rule_manager(rule_manager)
-            logger.debug("Rule manager initialized")
+            logger.info("Rule manager initialized")
 
             # Persona Manager
             persona_manager = PersonaManager()
@@ -120,7 +120,7 @@ async def lifespan(app: FastAPI):  # pylint: disable=too-many-statements
             # Set for API router
             from .routers.personas import set_persona_manager as set_api_persona_manager
             set_api_persona_manager(persona_manager)
-            logger.debug("Persona manager initialized")
+            logger.info("Persona manager initialized")
 
             # Task Queue
             task_queue = TaskQueue()

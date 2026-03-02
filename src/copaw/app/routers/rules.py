@@ -28,10 +28,10 @@ def get_rule_manager() -> RuleManager:
 
 class RuleScopeEnum(str, Enum):
     """Rule scope enum for API."""
-    GLOBAL = "GLOBAL"
-    CHANNEL = "CHANNEL"
-    USER = "USER"
-    SESSION = "SESSION"
+    GLOBAL = "global"
+    CHANNEL = "channel"
+    USER = "user"
+    SESSION = "session"
 
 
 class RuleCreate(BaseModel):

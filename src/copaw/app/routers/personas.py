@@ -28,10 +28,10 @@ def get_persona_manager() -> PersonaManager:
 
 class PersonaScopeEnum(str, Enum):
     """Persona scope enum for API."""
-    GLOBAL = "GLOBAL"
-    CHANNEL = "CHANNEL"
-    USER = "USER"
-    USER_CHANNEL = "USER_CHANNEL"
+    GLOBAL = "global"
+    CHANNEL = "channel"
+    USER = "user"
+    USER_CHANNEL = "user_channel"
 
 
 class PersonaCreate(BaseModel):
