@@ -35,9 +35,9 @@ try:
     from ..agents.persona import PersonaManager
     from .runner.task_queue import TaskQueue
     from .runner.task_processor import TaskProcessor
-    ENHANCEMENTS_ENABLED = True
+    ENHANCEMENTS_AVAILABLE = True
 except ImportError:
-    ENHANCEMENTS_ENABLED = False
+    ENHANCEMENTS_AVAILABLE = False
     RuleManager = None
     PersonaManager = None
     TaskQueue = None
@@ -101,18 +101,25 @@ async def lifespan(app: FastAPI):  # pylint: disable=too-many-statements
     runner.set_chat_manager(chat_manager)
 
     # --- Enhancement: Init rule manager, persona manager, task queue (PR #6) ---
-    if ENHANCEMENTS_ENABLED:
+    enhancements_enabled = ENHANCEMENTS_AVAILABLE
+    if enhancements_enabled:
         try:
             # Rule Manager
             rule_manager = RuleManager()
             await rule_manager.load()
             runner.set_rule_manager(rule_manager)
+            # Set for API router
+            from .routers.rules import set_rule_manager as set_api_rule_manager
+            set_api_rule_manager(rule_manager)
             logger.debug("Rule manager initialized")
 
             # Persona Manager
             persona_manager = PersonaManager()
             await persona_manager.load()
             runner.set_persona_manager(persona_manager)
+            # Set for API router
+            from .routers.personas import set_persona_manager as set_api_persona_manager
+            set_api_persona_manager(persona_manager)
             logger.debug("Persona manager initialized")
 
             # Task Queue
@@ -132,7 +139,7 @@ async def lifespan(app: FastAPI):  # pylint: disable=too-many-statements
             logger.debug("Task processor started")
         except Exception:
             logger.exception("Failed to initialize enhancements")
-            ENHANCEMENTS_ENABLED = False
+            enhancements_enabled = False
 
     # --- config file watcher (auto-reload channels on config.json change) ---
     config_watcher = ConfigWatcher(channel_manager=channel_manager)
@@ -161,7 +168,7 @@ async def lifespan(app: FastAPI):  # pylint: disable=too-many-statements
     app.state.mcp_manager = mcp_manager
     app.state.mcp_watcher = mcp_watcher
     # Enhancement: expose enhancement managers (PR #6)
-    if ENHANCEMENTS_ENABLED:
+    if enhancements_enabled:
         app.state.rule_manager = rule_manager
         app.state.persona_manager = persona_manager
         app.state.task_queue = task_queue
@@ -171,7 +178,7 @@ async def lifespan(app: FastAPI):  # pylint: disable=too-many-statements
         yield
     finally:
         # Enhancement: stop task processor (PR #6)
-        if ENHANCEMENTS_ENABLED:
+        if enhancements_enabled:
             try:
                 await task_processor.stop()
             except Exception:

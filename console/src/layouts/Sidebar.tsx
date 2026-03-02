@@ -18,6 +18,8 @@ import {
   Globe,
   Settings,
   Plug,
+  UserRound,
+  FileText,
 } from "lucide-react";
 
 const { Sider } = Layout;
@@ -33,6 +35,8 @@ const keyToPath: Record<string, string> = {
   models: "/models",
   environments: "/environments",
   "agent-config": "/agent-config",
+  rules: "/rules",
+  personas: "/personas",
 };
 
 interface SidebarProps {
@@ -133,6 +137,16 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
           key: "environments",
           label: t("nav.environments"),
           icon: <Globe size={16} />,
+        },
+        {
+          key: "rules",
+          label: t("nav.rules"),
+          icon: <FileText size={16} />,
+        },
+        {
+          key: "personas",
+          label: t("nav.personas"),
+          icon: <UserRound size={16} />,
         },
       ],
     },
