@@ -29,6 +29,20 @@ from .runner.manager import ChatManager
 from .routers import router as api_router
 from ..envs import load_envs_into_environ
 
+# Enhancement imports for PR #6
+try:
+    from ..agents.rules import RuleManager
+    from ..agents.persona import PersonaManager
+    from .runner.task_queue import TaskQueue
+    from .runner.task_processor import TaskProcessor
+    ENHANCEMENTS_ENABLED = True
+except ImportError:
+    ENHANCEMENTS_ENABLED = False
+    RuleManager = None
+    PersonaManager = None
+    TaskQueue = None
+    TaskProcessor = None
+
 # Apply log level on load so reload child process gets same level as CLI.
 logger = setup_logger(os.environ.get(LOG_LEVEL_ENV, "info"))
 
@@ -86,6 +100,40 @@ async def lifespan(app: FastAPI):  # pylint: disable=too-many-statements
 
     runner.set_chat_manager(chat_manager)
 
+    # --- Enhancement: Init rule manager, persona manager, task queue (PR #6) ---
+    if ENHANCEMENTS_ENABLED:
+        try:
+            # Rule Manager
+            rule_manager = RuleManager()
+            await rule_manager.load()
+            runner.set_rule_manager(rule_manager)
+            logger.debug("Rule manager initialized")
+
+            # Persona Manager
+            persona_manager = PersonaManager()
+            await persona_manager.load()
+            runner.set_persona_manager(persona_manager)
+            logger.debug("Persona manager initialized")
+
+            # Task Queue
+            task_queue = TaskQueue()
+            await task_queue.load_from_disk()  # Crash recovery
+            runner.set_task_queue(task_queue)
+            logger.debug("Task queue initialized")
+
+            # Task Processor
+            task_processor = TaskProcessor(
+                task_queue=task_queue,
+                rule_manager=rule_manager,
+                persona_manager=persona_manager,
+            )
+            await task_processor.start()
+            runner.set_task_processor(task_processor)
+            logger.debug("Task processor started")
+        except Exception:
+            logger.exception("Failed to initialize enhancements")
+            ENHANCEMENTS_ENABLED = False
+
     # --- config file watcher (auto-reload channels on config.json change) ---
     config_watcher = ConfigWatcher(channel_manager=channel_manager)
     await config_watcher.start()
@@ -112,10 +160,23 @@ async def lifespan(app: FastAPI):  # pylint: disable=too-many-statements
     app.state.config_watcher = config_watcher
     app.state.mcp_manager = mcp_manager
     app.state.mcp_watcher = mcp_watcher
+    # Enhancement: expose enhancement managers (PR #6)
+    if ENHANCEMENTS_ENABLED:
+        app.state.rule_manager = rule_manager
+        app.state.persona_manager = persona_manager
+        app.state.task_queue = task_queue
+        app.state.task_processor = task_processor
 
     try:
         yield
     finally:
+        # Enhancement: stop task processor (PR #6)
+        if ENHANCEMENTS_ENABLED:
+            try:
+                await task_processor.stop()
+            except Exception:
+                pass
+
         # stop order: watchers -> cron -> channels -> mcp -> runner
         try:
             await config_watcher.stop()

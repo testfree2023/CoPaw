@@ -43,6 +43,16 @@ from ..constant import (
     WORKING_DIR,
 )
 
+# Optional imports for enhancements (PR #1, #2, #5)
+try:
+    from .rules import RuleManager
+except ImportError:
+    RuleManager = None
+try:
+    from .persona import PersonaManager
+except ImportError:
+    PersonaManager = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,6 +65,8 @@ class CoPawAgent(ReActAgent):
     - Memory management with auto-compaction
     - Bootstrap guidance for first-time setup
     - System command handling (/compact, /new, etc.)
+    - Rule injection for persistent constraints (enhancement)
+    - Persona-based role isolation (enhancement)
     """
 
     def __init__(
@@ -65,6 +77,12 @@ class CoPawAgent(ReActAgent):
         memory_manager: MemoryManager | None = None,
         max_iters: int = 50,
         max_input_length: int = 128 * 1024,  # 128K = 131072 tokens
+        # Enhancement parameters (PR #5)
+        rule_manager: Optional["RuleManager"] = None,
+        persona_manager: Optional["PersonaManager"] = None,
+        channel: Optional[str] = None,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
     ):
         """Initialize CoPawAgent.
 
@@ -79,10 +97,22 @@ class CoPawAgent(ReActAgent):
                 (default: 50)
             max_input_length: Maximum input length in tokens for model
                 context window (default: 128K = 131072)
+            rule_manager: Optional RuleManager for rule injection (enhancement)
+            persona_manager: Optional PersonaManager for persona injection (enhancement)
+            channel: Channel name for context-aware processing
+            user_id: User identifier for context-aware processing
+            session_id: Session identifier for context-aware processing
         """
         self._env_context = env_context
         self._max_input_length = max_input_length
         self._mcp_clients = mcp_clients or []
+
+        # Enhancement: Store context and managers (PR #5)
+        self._channel = channel
+        self._user_id = user_id
+        self._session_id = session_id
+        self._rule_manager = rule_manager
+        self._persona_manager = persona_manager
 
         # Memory compaction threshold: configurable ratio of max_input_length
         self._memory_compact_threshold = int(
@@ -179,11 +209,49 @@ class CoPawAgent(ReActAgent):
         """Build system prompt from working dir files and env context.
 
         Returns:
-            Complete system prompt string
+            Complete system prompt string with rules and persona injected
         """
         sys_prompt = build_system_prompt_from_working_dir()
+
+        # Enhancement: Inject persona (PR #2, #5)
+        if self._persona_manager:
+            try:
+                persona = self._persona_manager.get_active_persona(
+                    channel=self._channel,
+                    user_id=self._user_id,
+                )
+                if persona:
+                    persona_section = (
+                        f"\n\n# 当前角色：{persona.name}\n"
+                        f"{persona.description}\n\n"
+                        f"{persona.system_prompt_addon}"
+                    )
+                    sys_prompt += persona_section
+                    logger.debug(f"Injected persona: {persona.name}")
+            except Exception as e:
+                logger.warning(f"Failed to inject persona: {e}")
+
+        # Enhancement: Inject rules (PR #1, #5)
+        if self._rule_manager:
+            try:
+                rules = self._rule_manager.get_active_rules(
+                    channel=self._channel,
+                    user_id=self._user_id,
+                    session_id=self._session_id,
+                )
+                if rules:
+                    rules_section = "\n\n# 当前适用的规则约束\n"
+                    for i, rule in enumerate(rules, 1):
+                        rules_section += f"\n{i}. {rule.content}\n"
+                    sys_prompt += rules_section
+                    logger.debug(f"Injected {len(rules)} rules")
+            except Exception as e:
+                logger.warning(f"Failed to inject rules: {e}")
+
+        # Add environment context
         if self._env_context is not None:
             sys_prompt = self._env_context + "\n\n" + sys_prompt
+
         return sys_prompt
 
     def _setup_memory_manager(

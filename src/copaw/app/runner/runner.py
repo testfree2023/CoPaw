@@ -31,6 +31,12 @@ class AgentRunner(Runner):
 
         self.memory_manager: MemoryManager | None = None
 
+        # Enhancement: Task and rule management (PR #3, #4, #5, #6)
+        self._task_queue = None
+        self._task_processor = None
+        self._rule_manager = None
+        self._persona_manager = None
+
     def set_chat_manager(self, chat_manager):
         """Set chat manager for auto-registration.
 
@@ -46,6 +52,39 @@ class AgentRunner(Runner):
             mcp_manager: MCPClientManager instance
         """
         self._mcp_manager = mcp_manager
+
+    # Enhancement: Setter methods for managers (PR #6)
+    def set_task_queue(self, task_queue):
+        """Set task queue for task management.
+
+        Args:
+            task_queue: TaskQueue instance
+        """
+        self._task_queue = task_queue
+
+    def set_rule_manager(self, rule_manager):
+        """Set rule manager for rule management.
+
+        Args:
+            rule_manager: RuleManager instance
+        """
+        self._rule_manager = rule_manager
+
+    def set_persona_manager(self, persona_manager):
+        """Set persona manager for persona management.
+
+        Args:
+            persona_manager: PersonaManager instance
+        """
+        self._persona_manager = persona_manager
+
+    def set_task_processor(self, task_processor):
+        """Set task processor for task processing.
+
+        Args:
+            task_processor: TaskProcessor instance
+        """
+        self._task_processor = task_processor
 
     async def query_handler(
         self,
@@ -102,6 +141,12 @@ class AgentRunner(Runner):
                 memory_manager=self.memory_manager,
                 max_iters=max_iters,
                 max_input_length=max_input_length,
+                # Enhancement: Pass managers to agent (PR #5, #6)
+                rule_manager=self._rule_manager,
+                persona_manager=self._persona_manager,
+                channel=channel,
+                user_id=user_id,
+                session_id=session_id,
             )
             await agent.register_mcp_clients()
             agent.set_console_output_enabled(enabled=False)
