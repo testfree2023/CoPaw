@@ -13,6 +13,7 @@ import defaultConfig, { DefaultConfig } from "./OptionsPanel/defaultConfig";
 import Weather from "./Weather";
 import { getApiUrl, getApiToken } from "../../api/config";
 import { providerApi } from "../../api/modules/provider";
+import WriteFileTool from "../../components/WriteFileTool";
 import "./index.module.less";
 
 interface CustomWindow extends Window {
@@ -132,6 +133,7 @@ export default function ChatPage() {
       },
       customToolRenderConfig: {
         "weather search mock": Weather,
+        "write_file": WriteFileTool,
       },
     } as unknown as IAgentScopeRuntimeWebUIOptions;
   }, [optionsConfig]);

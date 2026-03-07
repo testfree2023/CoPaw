@@ -16,10 +16,10 @@ import {
   Cpu,
   Box,
   Globe,
-  Settings,
   Plug,
   UserRound,
   FileText,
+  ListTodo,
 } from "lucide-react";
 
 const { Sider } = Layout;
@@ -29,14 +29,15 @@ const keyToPath: Record<string, string> = {
   channels: "/channels",
   sessions: "/sessions",
   "cron-jobs": "/cron-jobs",
+  tasks: "/tasks",
   skills: "/skills",
   mcp: "/mcp",
   workspace: "/workspace",
-  models: "/models",
-  environments: "/environments",
+  "agent-instances": "/agent-instances",
   "agent-config": "/agent-config",
   rules: "/rules",
-  personas: "/personas",
+  models: "/models",
+  environments: "/environments",
 };
 
 interface SidebarProps {
@@ -94,6 +95,11 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
           label: t("nav.cronJobs"),
           icon: <CalendarClock size={16} />,
         },
+        {
+          key: "tasks",
+          label: t("nav.tasks"),
+          icon: <ListTodo size={16} />,
+        },
       ],
     },
     {
@@ -117,9 +123,14 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
           icon: <Plug size={16} />,
         },
         {
+          key: "agent-instances",
+          label: t("nav.agentInstances"),
+          icon: <UserRound size={16} />,
+        },
+        {
           key: "agent-config",
           label: t("nav.agentConfig"),
-          icon: <Settings size={16} />,
+          icon: <Cpu size={16} />,
         },
       ],
     },
@@ -142,11 +153,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
           key: "rules",
           label: t("nav.rules"),
           icon: <FileText size={16} />,
-        },
-        {
-          key: "personas",
-          label: t("nav.personas"),
-          icon: <UserRound size={16} />,
         },
       ],
     },

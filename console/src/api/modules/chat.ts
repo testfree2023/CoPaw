@@ -21,8 +21,14 @@ export const chatApi = {
       body: JSON.stringify(chat),
     }),
 
-  getChat: (chatId: string) =>
-    request<ChatHistory>(`/chats/${encodeURIComponent(chatId)}`),
+  getChat: (chatId: string, params?: { limit?: number }) => {
+    const searchParams = new URLSearchParams();
+    if (params?.limit) searchParams.append("limit", String(params.limit));
+    const query = searchParams.toString();
+    return request<ChatHistory>(
+      `/chats/${encodeURIComponent(chatId)}${query ? `?${query}` : ""}`,
+    );
+  },
 
   updateChat: (chatId: string, chat: Partial<ChatSpec>) =>
     request<ChatSpec>(`/chats/${encodeURIComponent(chatId)}`, {

@@ -26,17 +26,17 @@ interface Persona {
   system_prompt_addon: string;
   scope: string;
   channel?: string;
-  user_id?: string;
+  user_ids?: string;  // Space-separated user IDs
   enabled: boolean;
   created_at: string;
   updated_at: string;
 }
 
 const scopeColors: Record<string, string> = {
-  GLOBAL: "blue",
-  CHANNEL: "green",
-  USER: "orange",
-  USER_CHANNEL: "purple",
+  global: "blue",
+  channel: "green",
+  user: "orange",
+  user_channel: "purple",
 };
 
 function PersonasPage() {
@@ -67,7 +67,7 @@ function PersonasPage() {
   const handleAdd = () => {
     setEditingPersona(null);
     form.resetFields();
-    form.setFieldsValue({ scope: "GLOBAL", enabled: true });
+    form.setFieldsValue({ scope: "global", enabled: true });
     setModalVisible(true);
   };
 
@@ -171,10 +171,10 @@ function PersonasPage() {
     },
     {
       title: t("personas.user", "User"),
-      dataIndex: "user_id",
-      key: "user_id",
-      width: 100,
-      render: (userId: string) => userId || "-",
+      dataIndex: "user_ids",
+      key: "user_ids",
+      width: 150,
+      render: (userIds: string) => userIds || "-",
     },
     {
       title: t("personas.status", "Status"),
@@ -274,10 +274,10 @@ function PersonasPage() {
             rules={[{ required: true }]}
           >
             <Select>
-              <Option value="GLOBAL">{t("personas.scopeGlobal", "Global")}</Option>
-              <Option value="CHANNEL">{t("personas.scopeChannel", "Channel")}</Option>
-              <Option value="USER">{t("personas.scopeUser", "User")}</Option>
-              <Option value="USER_CHANNEL">{t("personas.scopeUserChannel", "User + Channel")}</Option>
+              <Option value="global">{t("personas.scopeGlobal", "Global")}</Option>
+              <Option value="channel">{t("personas.scopeChannel", "Channel")}</Option>
+              <Option value="user">{t("personas.scopeUser", "User")}</Option>
+              <Option value="user_channel">{t("personas.scopeUserChannel", "User + Channel")}</Option>
             </Select>
           </Form.Item>
 
@@ -289,22 +289,22 @@ function PersonasPage() {
               const scope = getFieldValue("scope");
               return (
                 <>
-                  {(scope === "CHANNEL" || scope === "USER_CHANNEL") && (
+                  {(scope === "channel" || scope === "user_channel") && (
                     <Form.Item
                       name="channel"
                       label={t("personas.channel", "Channel")}
-                      rules={scope === "CHANNEL" ? [{ required: true }] : []}
+                      rules={scope === "channel" || scope === "user_channel" ? [{ required: true, message: t("personas.channelRequired", "Please input channel") }] : undefined}
                     >
                       <Input placeholder="dingtalk, feishu, etc." />
                     </Form.Item>
                   )}
-                  {(scope === "USER" || scope === "USER_CHANNEL") && (
+                  {(scope === "user" || scope === "user_channel") && (
                     <Form.Item
-                      name="user_id"
-                      label={t("personas.userId", "User ID")}
-                      rules={scope === "USER" ? [{ required: true }] : []}
+                      name="user_ids"
+                      label={t("personas.userIds", "User IDs")}
+                      rules={scope === "user" || scope === "user_channel" ? [{ required: true, message: t("personas.userIdsRequired", "Please input user IDs") }] : undefined}
                     >
-                      <Input placeholder="User identifier" />
+                      <Input placeholder="user1 user2 user3 (space-separated)" />
                     </Form.Item>
                   )}
                 </>

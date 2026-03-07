@@ -148,15 +148,26 @@ function buildResponseCard(
  * - Consecutive non-user messages (assistant / system / tool) → grouped
  *   into a single AgentScopeRuntimeResponseCard with all messages in
  *   the `output` array, supporting plugin_call & plugin_call_output.
+ *
+ * Performance: Limited to process max 500 messages to prevent UI freeze
  */
 function convertMessages(
   messages: Message[],
 ): IAgentScopeRuntimeWebUIMessage[] {
+  // Safety limit to prevent UI freeze on large message arrays
+  const MAX_MESSAGES = 500;
+  if (messages.length > MAX_MESSAGES) {
+    console.warn(
+      `Large message array detected (${messages.length}), limiting to ${MAX_MESSAGES}`,
+    );
+  }
+
+  const limitedMessages = messages.slice(-MAX_MESSAGES);
   const result: IAgentScopeRuntimeWebUIMessage[] = [];
   let i = 0;
 
-  while (i < messages.length) {
-    const msg = messages[i];
+  while (i < limitedMessages.length) {
+    const msg = limitedMessages[i];
 
     if (msg.role === "user") {
       result.push(buildUserCard(msg));
@@ -164,8 +175,8 @@ function convertMessages(
     } else {
       // Group consecutive non-user messages into one response card
       const outputMsgs: OutputMessage[] = [];
-      while (i < messages.length && messages[i].role !== "user") {
-        outputMsgs.push(toOutputMessage(messages[i]));
+      while (i < limitedMessages.length && limitedMessages[i].role !== "user") {
+        outputMsgs.push(toOutputMessage(limitedMessages[i]));
         i++;
       }
       if (outputMsgs.length > 0) {
@@ -331,30 +342,57 @@ class SessionApi implements IAgentScopeRuntimeWebUISessionAPI {
   private async fetchSessionFromBackend(
     sessionId: string,
   ): Promise<IAgentScopeRuntimeWebUISession> {
-    const chatHistory = await api.getChat(sessionId);
+    // Add timeout to prevent hanging
+    const fetchPromise = api.getChat(sessionId, { limit: 100 });
 
-    const chatSpec = this.sessionList.find((s) => s.id === sessionId) as
-      | ExtendedSession
-      | undefined;
-
-    const session = {
-      id: sessionId,
-      name: chatSpec?.name || sessionId,
-      sessionId: chatSpec?.sessionId || sessionId,
-      userId: chatSpec?.userId || "default",
-      channel: chatSpec?.channel || "console",
-      messages: convertMessages(chatHistory.messages || []),
-      meta: chatSpec?.meta || {},
-    } as ExtendedSession;
-
-    this.updateWindowVariables(session);
-
-    this.sessionCache.set(sessionId, {
-      session,
-      timestamp: Date.now(),
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error("请求超时，会话数据加载失败"));
+      }, 10000); // 10 秒超时
     });
 
-    return session;
+    try {
+      const chatHistory = await Promise.race([fetchPromise, timeoutPromise]);
+
+      const chatSpec = this.sessionList.find((s) => s.id === sessionId) as
+        | ExtendedSession
+        | undefined;
+
+      const session = {
+        id: sessionId,
+        name: chatSpec?.name || sessionId,
+        sessionId: chatSpec?.sessionId || sessionId,
+        userId: chatSpec?.userId || "default",
+        channel: chatSpec?.channel || "console",
+        messages: convertMessages(chatHistory.messages || []),
+        meta: chatSpec?.meta || {},
+      } as ExtendedSession;
+
+      this.updateWindowVariables(session);
+
+      this.sessionCache.set(sessionId, {
+        session,
+        timestamp: Date.now(),
+      });
+
+      return session;
+    } catch (error) {
+      console.error("Failed to fetch session:", error);
+      // Return cached session on error
+      const cached = this.sessionCache.get(sessionId);
+      if (cached) {
+        this.updateWindowVariables(cached.session as ExtendedSession);
+        return cached.session;
+      }
+      // Fallback to sessionList
+      const fallbackSession = this.sessionList.find(
+        (session) => session.id === sessionId,
+      );
+      if (fallbackSession) {
+        return fallbackSession;
+      }
+      throw error;
+    }
   }
 
   async updateSession(session: Partial<IAgentScopeRuntimeWebUISession>) {
