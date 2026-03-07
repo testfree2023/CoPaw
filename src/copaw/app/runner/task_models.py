@@ -4,7 +4,7 @@
 This module defines data models for task specification and lifecycle management.
 """
 from enum import Enum
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 from pydantic import BaseModel, Field
 from uuid import uuid4
@@ -73,7 +73,7 @@ class TaskSpec(BaseModel):
 
     # Status tracking
     status: TaskStatus = TaskStatus.PENDING
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
 
