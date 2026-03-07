@@ -246,7 +246,7 @@ class TaskProcessor:
 
         if verified:
             await self.task_queue.complete(task.id, response)
-            self.task_queue.mark_verified(task.id, True, details)
+            await self.task_queue.mark_verified(task.id, True, details)
             logger.info(f"Task {task.id} completed and verified successfully")
         else:
             # Retry if possible
