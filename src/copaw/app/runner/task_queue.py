@@ -126,7 +126,8 @@ class TaskQueue:
             task: Task to enqueue
         """
         await self._pending_queue.put(task)
-        await self._persist_pending()
+        # Persist without holding lock to avoid deadlock
+        await self._persist_pending_simple()
 
     async def dequeue(self) -> Optional[TaskSpec]:
         """Dequeue a task for processing.
@@ -139,7 +140,8 @@ class TaskQueue:
             task.status = TaskStatus.PROCESSING
             task.started_at = datetime.now(timezone.utc)
             self._processing[task.id] = task
-            await self._persist_processing()
+            # Persist without holding lock to avoid deadlock
+            await self._persist_processing_simple()
             return task
         except asyncio.TimeoutError:
             return None
@@ -163,7 +165,7 @@ class TaskQueue:
             del self._processing[task_id]
             self._completed[task_id] = task
 
-            await self._persist_all()
+            await self._persist_all_locked()
 
     async def fail(self, task_id: str, error: str) -> None:
         """Mark a task as failed.
@@ -241,9 +243,15 @@ class TaskQueue:
         """List all pending tasks (for debugging)."""
         tasks = []
         async with self._lock:
-            while not self._pending_queue.empty():
-                task = self._pending_queue.get_nowait()
-                tasks.append(task)
+            # Drain the queue first, then re-queue all items
+            while True:
+                try:
+                    task = self._pending_queue.get_nowait()
+                    tasks.append(task)
+                except asyncio.QueueEmpty:
+                    break
+            # Re-queue all tasks
+            for task in tasks:
                 self._pending_queue.put_nowait(task)
         return tasks
 
@@ -310,13 +318,85 @@ class TaskQueue:
             }
         await self._atomic_write(self._completed_file, data)
 
+    async def _persist_pending_simple(self) -> None:
+        """Persist pending tasks to disk (no lock - caller must not hold lock)."""
+        tasks = []
+        # Drain the queue to snapshot all pending tasks
+        while True:
+            try:
+                task = self._pending_queue.get_nowait()
+                tasks.append(task)
+            except asyncio.QueueEmpty:
+                break
+        # Re-queue all tasks after snapshot
+        for task in tasks:
+            self._pending_queue.put_nowait(task)
+
+        data = {"version": 1, "tasks": [t.model_dump(mode="json") for t in tasks]}
+        await self._atomic_write(self._pending_file, data)
+
+    async def _persist_processing_simple(self) -> None:
+        """Persist processing tasks to disk (no lock - caller must not hold lock)."""
+        data = {
+            "version": 1,
+            "tasks": [t.model_dump(mode="json") for t in self._processing.values()],
+        }
+        await self._atomic_write(self._processing_file, data)
+
     async def _persist_all(self) -> None:
-        """Persist all task states to disk."""
+        """Persist all task states to disk.
+
+        This method acquires the lock internally, so it should NOT be called
+        from within a lock context. Call _persist_all_locked() instead if
+        the lock is already held.
+        """
+        async with self._lock:
+            await self._persist_all_locked()
+
+    async def _persist_all_locked(self) -> None:
+        """Persist all task states to disk (lock must be held by caller)."""
+        # Prepare all data while holding lock
+        pending_data, processing_data, completed_data = await self._prepare_persist_data()
+
+        # Write to disk without holding lock (prevents deadlock)
         await asyncio.gather(
-            self._persist_pending(),
-            self._persist_processing(),
-            self._persist_completed(),
+            self._atomic_write(self._pending_file, pending_data),
+            self._atomic_write(self._processing_file, processing_data),
+            self._atomic_write(self._completed_file, completed_data),
         )
+
+    async def _prepare_persist_data(self) -> tuple:
+        """Prepare persistence data (lock must be held by caller)."""
+        # Drain pending queue to snapshot
+        pending_tasks = []
+        while True:
+            try:
+                task = self._pending_queue.get_nowait()
+                pending_tasks.append(task)
+            except asyncio.QueueEmpty:
+                break
+        # Re-queue all tasks
+        for task in pending_tasks:
+            self._pending_queue.put_nowait(task)
+
+        pending_data = {"version": 1, "tasks": [t.model_dump(mode="json") for t in pending_tasks]}
+        processing_data = {
+            "version": 1,
+            "tasks": [t.model_dump(mode="json") for t in self._processing.values()],
+        }
+
+        # Trim completed to last 100
+        completed_values = list(self._completed.values())
+        if len(completed_values) > 100:
+            sorted_completed = sorted(
+                completed_values,
+                key=lambda t: t.completed_at or datetime.min,
+                reverse=True,
+            )
+            completed_values = sorted_completed[:100]
+
+        completed_data = {"version": 1, "tasks": [t.model_dump(mode="json") for t in completed_values]}
+        return pending_data, processing_data, completed_data
 
     async def _atomic_write(self, path: Path, data: dict) -> None:
         """Write data to file atomically (temp file + rename)."""
