@@ -31,6 +31,7 @@ Example:
 """
 import asyncio
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List, Dict
 
@@ -136,7 +137,7 @@ class TaskQueue:
         try:
             task = await asyncio.wait_for(self._pending_queue.get(), timeout=0.1)
             task.status = TaskStatus.PROCESSING
-            task.started_at = datetime.utcnow()
+            task.started_at = datetime.now(timezone.utc)
             self._processing[task.id] = task
             await self._persist_processing()
             return task
@@ -157,7 +158,7 @@ class TaskQueue:
             task = self._processing[task_id]
             task.status = TaskStatus.WAITING_VERIFICATION
             task.llm_response = result
-            task.completed_at = datetime.utcnow()
+            task.completed_at = datetime.now(timezone.utc)
 
             del self._processing[task_id]
             self._completed[task_id] = task
@@ -265,9 +266,16 @@ class TaskQueue:
         """Persist pending tasks to disk."""
         tasks = []
         async with self._lock:
-            while not self._pending_queue.empty():
-                task = self._pending_queue.get_nowait()
-                tasks.append(task)
+            # Drain the queue to snapshot all pending tasks
+            # We need to re-queue them after persisting
+            while True:
+                try:
+                    task = self._pending_queue.get_nowait()
+                    tasks.append(task)
+                except asyncio.QueueEmpty:
+                    break
+            # Re-queue all tasks after snapshot
+            for task in tasks:
                 self._pending_queue.put_nowait(task)
 
         data = {"version": 1, "tasks": [t.model_dump(mode="json") for t in tasks]}
@@ -328,7 +336,3 @@ class TaskQueue:
             while not self._pending_queue.empty():
                 self._pending_queue.get_nowait()
             await self._persist_all()
-
-
-# Import datetime at module level
-from datetime import datetime
