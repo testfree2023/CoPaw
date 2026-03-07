@@ -33,6 +33,7 @@ from ..envs import load_envs_into_environ
 try:
     from ..agents.rules import RuleManager
     from ..agents.persona import PersonaManager
+    from ..agents.agent_instance import AgentInstanceManager, AgentRouter
     from .runner.task_queue import TaskQueue
     from .runner.task_processor import TaskProcessor
     ENHANCEMENTS_AVAILABLE = True
@@ -40,6 +41,8 @@ except ImportError:
     ENHANCEMENTS_AVAILABLE = False
     RuleManager = None
     PersonaManager = None
+    AgentInstanceManager = None
+    AgentRouter = None
     TaskQueue = None
     TaskProcessor = None
 
@@ -122,17 +125,36 @@ async def lifespan(app: FastAPI):  # pylint: disable=too-many-statements
             set_api_persona_manager(persona_manager)
             logger.info("Persona manager initialized")
 
+            # Agent Instance Manager (Multi-agent support)
+            agent_instance_manager = AgentInstanceManager()
+            await agent_instance_manager.load()
+            runner.set_agent_instance_manager(agent_instance_manager)
+            # Set for API router
+            from .routers.agent_instances import set_manager as set_agent_instance_manager
+            set_agent_instance_manager(agent_instance_manager)
+            logger.info("Agent instance manager initialized")
+
+            # Agent Router
+            agent_router = AgentRouter(agent_instance_manager)
+            runner.set_agent_router(agent_router)
+            logger.debug("Agent router initialized")
+
             # Task Queue
             task_queue = TaskQueue()
             await task_queue.load_from_disk()  # Crash recovery
             runner.set_task_queue(task_queue)
+            # Set for API router
+            from .routers.tasks import set_task_queue as set_api_task_queue
+            set_api_task_queue(task_queue)
             logger.debug("Task queue initialized")
 
             # Task Processor
+            # Note: agent will be set after CoPawAgent is created
             task_processor = TaskProcessor(
                 task_queue=task_queue,
                 rule_manager=rule_manager,
                 persona_manager=persona_manager,
+                cron_manager=cron_manager,
             )
             await task_processor.start()
             runner.set_task_processor(task_processor)

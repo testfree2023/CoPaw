@@ -6,7 +6,7 @@ This module defines the data models for rule specification and management.
 from enum import Enum
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from uuid import uuid4
 
 
@@ -57,12 +57,12 @@ class RuleSpec(BaseModel):
     # Status
     enabled: bool = True
 
-    class Config:
-        """Pydantic model config."""
-        json_encoders = {
+    model_config = ConfigDict(
+        json_encoders={
             datetime: lambda v: v.isoformat(),
             RuleScope: lambda v: v.value,
         }
+    )
 
     def is_applicable_to(
         self,

@@ -9,9 +9,10 @@ import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, UploadFile, File
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 
 from ...constant import WORKING_DIR
 
@@ -108,6 +109,71 @@ async def download_workspace():
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
         },
+    )
+
+
+@router.get(
+    "/files/{file_path:path}",
+    summary="Download a single file from workspace",
+    description=(
+        "Download a specific file from WORKING_DIR. "
+        "The file_path is relative to WORKING_DIR."
+    ),
+    responses={
+        200: {
+            "content": {"application/octet-stream": {}},
+            "description": "The requested file",
+        },
+        404: {"description": "File not found"},
+        400: {"description": "Invalid path"},
+    },
+)
+async def download_file(
+    file_path: str,
+    as_attachment: Optional[bool] = True,
+):
+    """Download a specific file from WORKING_DIR."""
+    # Resolve the file path
+    full_path = WORKING_DIR / file_path
+    full_path = full_path.resolve()
+
+    # Security check: ensure path is within WORKING_DIR
+    try:
+        full_path.relative_to(WORKING_DIR.resolve())
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="File path must be within WORKING_DIR",
+        )
+
+    if not full_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"File not found: {file_path}",
+        )
+
+    if not full_path.is_file():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Path is not a file: {file_path}",
+        )
+
+    filename = full_path.name
+
+    # RFC 5987 encoding for non-ASCII filenames
+    import urllib.parse
+    encoded_filename = urllib.parse.quote(filename)
+    content_disposition = f"attachment; filename*=UTF-8''{encoded_filename}"
+
+    return FileResponse(
+        full_path,
+        media_type="application/octet-stream",
+        filename=filename if as_attachment else None,
+        headers=(
+            {"Content-Disposition": content_disposition}
+            if as_attachment
+            else {}
+        ),
     )
 
 

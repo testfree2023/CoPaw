@@ -3,6 +3,7 @@ import logging
 import os
 import platform
 import sys
+from typing import Union
 
 
 _LEVEL_MAP = {
@@ -93,7 +94,7 @@ class SuppressPathAccessLogFilter(logging.Filter):
             return True
 
 
-def setup_logger(level: int | str = logging.INFO):
+def setup_logger(level: Union[int, str] = logging.INFO):
     """Configure logging to only output from this package (copaw), not deps."""
     log_format = "%(asctime)s | %(message)s"
     datefmt = "%Y-%m-%d %H:%M:%S"

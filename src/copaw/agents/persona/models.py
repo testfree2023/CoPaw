@@ -19,7 +19,7 @@ Example:
 from enum import Enum
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from uuid import uuid4
 
 
@@ -48,7 +48,7 @@ class PersonaSpec(BaseModel):
         system_prompt_addon: Text to append to system prompt
         scope: The scope of persona application
         channel: Channel name (for CHANNEL/USER_CHANNEL scope)
-        user_id: User identifier (for USER/USER_CHANNEL scope)
+        user_ids: Space-separated user identifiers (for USER/USER_CHANNEL scope)
         enabled: Whether the persona is currently active
         created_at: When the persona was created
     """
@@ -60,18 +60,25 @@ class PersonaSpec(BaseModel):
     # Scope configuration
     scope: PersonaScope = PersonaScope.GLOBAL
     channel: Optional[str] = None
-    user_id: Optional[str] = None
+    user_ids: Optional[str] = None  # Space-separated user IDs
 
     # Status
     enabled: bool = True
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
-    class Config:
-        """Pydantic model config."""
-        json_encoders = {
+    @property
+    def user_id_list(self) -> list[str]:
+        """Get list of user IDs from space-separated string."""
+        if not self.user_ids:
+            return []
+        return [uid.strip() for uid in self.user_ids.split() if uid.strip()]
+
+    model_config = ConfigDict(
+        json_encoders={
             datetime: lambda v: v.isoformat(),
             PersonaScope: lambda v: v.value,
         }
+    )
 
     def is_applicable_to(
         self,
@@ -95,11 +102,11 @@ class PersonaSpec(BaseModel):
         elif self.scope == PersonaScope.CHANNEL:
             return self.channel == channel
         elif self.scope == PersonaScope.USER:
-            return self.user_id == user_id
+            return user_id in self.user_id_list
         elif self.scope == PersonaScope.USER_CHANNEL:
             return (
                 self.channel == channel and
-                self.user_id == user_id
+                user_id in self.user_id_list
             )
 
         return False

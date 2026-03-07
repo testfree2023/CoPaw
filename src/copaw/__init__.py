@@ -3,6 +3,10 @@ import logging
 import os
 import time
 
+# Compatibility fix for futu-api with protobuf >= 5.x
+if "PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION" not in os.environ:
+    os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
+
 from .constant import LOG_LEVEL_ENV
 from .utils.logging import setup_logger
 

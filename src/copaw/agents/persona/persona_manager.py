@@ -105,7 +105,7 @@ class PersonaManager:
         system_prompt_addon: str = "",
         scope: PersonaScope = PersonaScope.GLOBAL,
         channel: Optional[str] = None,
-        user_id: Optional[str] = None,
+        user_ids: Optional[str] = None,
         enabled: bool = True,
     ) -> PersonaSpec:
         """Create a new persona.
@@ -116,20 +116,20 @@ class PersonaManager:
             system_prompt_addon: Text to append to system prompt
             scope: Persona application scope
             channel: Channel name (for CHANNEL/USER_CHANNEL scope)
-            user_id: User ID (for USER/USER_CHANNEL scope)
+            user_ids: Space-separated user IDs (for USER/USER_CHANNEL scope)
             enabled: Whether the persona is initially enabled
 
         Returns:
             The created PersonaSpec
 
         Raises:
-            ValueError: If scope-channel/user_id mismatch
+            ValueError: If scope-channel/user_ids mismatch
         """
         # Validate scope-specific fields
         if scope in (PersonaScope.CHANNEL, PersonaScope.USER_CHANNEL) and not channel:
             raise ValueError("channel is required for CHANNEL/USER_CHANNEL scope")
-        if scope in (PersonaScope.USER, PersonaScope.USER_CHANNEL) and not user_id:
-            raise ValueError("user_id is required for USER/USER_CHANNEL scope")
+        if scope in (PersonaScope.USER, PersonaScope.USER_CHANNEL) and not user_ids:
+            raise ValueError("user_ids is required for USER/USER_CHANNEL scope")
 
         persona = PersonaSpec(
             name=name,
@@ -137,7 +137,7 @@ class PersonaManager:
             system_prompt_addon=system_prompt_addon,
             scope=scope,
             channel=channel,
-            user_id=user_id,
+            user_ids=user_ids,
             enabled=enabled,
         )
 
@@ -168,6 +168,9 @@ class PersonaManager:
         description: Optional[str] = None,
         system_prompt_addon: Optional[str] = None,
         enabled: Optional[bool] = None,
+        scope: Optional[str] = None,
+        channel: Optional[str] = None,
+        user_ids: Optional[str] = None,
     ) -> Optional[PersonaSpec]:
         """Update an existing persona."""
         async with self._lock:
@@ -183,6 +186,12 @@ class PersonaManager:
                 persona.system_prompt_addon = system_prompt_addon
             if enabled is not None:
                 persona.enabled = enabled
+            if scope is not None:
+                persona.scope = PersonaScope(scope)
+            if channel is not None:
+                persona.channel = channel
+            if user_ids is not None:
+                persona.user_ids = user_ids
 
             await self._persist()
             return persona

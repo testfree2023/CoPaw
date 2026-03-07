@@ -34,7 +34,7 @@ import json
 import asyncio
 from pathlib import Path
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .models import RuleSpec, RuleScope
 
@@ -315,7 +315,7 @@ class RuleManager:
         async with self._lock:
             if rule_id not in self._rules:
                 return False
-            self._rules[rule_id].reinforced_at = datetime.utcnow()
+            self._rules[rule_id].reinforced_at = datetime.now(timezone.utc)
             await self._persist()
             return True
 

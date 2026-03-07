@@ -7,7 +7,6 @@ from typing import Optional
 from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from agentscope.session import JSONSession
-from agentscope.memory import InMemoryMemory
 
 from .manager import ChatManager
 from .models import (
@@ -15,6 +14,7 @@ from .models import (
     ChatHistory,
 )
 from .utils import agentscope_msg_to_message
+from ...agents.memory.copaw_memory import CoPawInMemoryMemory
 
 
 router = APIRouter(prefix="/chats", tags=["chats"])
@@ -129,13 +129,18 @@ async def get_chat(
     chat_id: str,
     mgr: ChatManager = Depends(get_chat_manager),
     session: JSONSession = Depends(get_session),
+    limit: Optional[int] = Query(
+        default=100,
+        description="Max messages to return (default: 100, max: 500)",
+    ),
 ):
     """Get detailed information about a specific chat by UUID.
 
     Args:
         chat_id: Chat UUID
         mgr: Chat manager dependency
-        session: JSONSession  dependency
+        session: JSONSession dependency
+        limit: Max messages to return (default: 100, max: 500)
 
     Returns:
         ChatHistory with messages
@@ -161,12 +166,23 @@ async def get_chat(
             state = json.load(file)
     except Exception:
         return ChatHistory(messages=[])
+
     memories = state.get("agent", {}).get("memory", [])
-    memory = InMemoryMemory()
+    memory = CoPawInMemoryMemory()
     memory.load_state_dict(memories)
 
-    memories = await memory.get_memory()
-    messages = agentscope_msg_to_message(memories)
+    # Apply limit to reduce memory and processing time
+    all_memories = await memory.get_memory()
+
+    # Limit messages to prevent performance issues
+    max_limit = 500
+    effective_limit = min(limit or 100, max_limit)
+
+    # Get only the most recent messages
+    if len(all_memories) > effective_limit:
+        all_memories = all_memories[-effective_limit:]
+
+    messages = agentscope_msg_to_message(all_memories)
     return ChatHistory(messages=messages)
 
 

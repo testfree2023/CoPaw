@@ -34,6 +34,7 @@ from .tools import (
     send_file_to_user,
     write_file,
 )
+from .skill_toolkit import register_skill_tools
 from .utils import process_file_and_media_blocks_in_message
 from ..agents.memory import MemoryManager
 from ..config import load_config
@@ -52,6 +53,12 @@ try:
     from .persona import PersonaManager
 except ImportError:
     PersonaManager = None
+try:
+    from .agent_instance import AgentInstanceManager, AgentRouter, RoutingResult
+except ImportError:
+    AgentInstanceManager = None
+    AgentRouter = None
+    RoutingResult = None
 
 logger = logging.getLogger(__name__)
 
@@ -77,12 +84,16 @@ class CoPawAgent(ReActAgent):
         memory_manager: MemoryManager | None = None,
         max_iters: int = 50,
         max_input_length: int = 128 * 1024,  # 128K = 131072 tokens
+        name: str = "Friday",  # Agent name (default: "Friday")
         # Enhancement parameters (PR #5)
         rule_manager: Optional["RuleManager"] = None,
         persona_manager: Optional["PersonaManager"] = None,
         channel: Optional[str] = None,
         user_id: Optional[str] = None,
         session_id: Optional[str] = None,
+        # Multi-agent parameters (Phase 1)
+        agent_instance_manager: Optional["AgentInstanceManager"] = None,
+        is_expert_agent: bool = False,  # True if this is an expert agent (not PM)
     ):
         """Initialize CoPawAgent.
 
@@ -97,11 +108,14 @@ class CoPawAgent(ReActAgent):
                 (default: 50)
             max_input_length: Maximum input length in tokens for model
                 context window (default: 128K = 131072)
+            name: Agent name (default: "Friday")
             rule_manager: Optional RuleManager for rule injection (enhancement)
             persona_manager: Optional PersonaManager for persona injection (enhancement)
             channel: Channel name for context-aware processing
             user_id: User identifier for context-aware processing
             session_id: Session identifier for context-aware processing
+            agent_instance_manager: Optional AgentInstanceManager for multi-agent routing
+            is_expert_agent: True if this is an expert agent (not the main PM agent)
         """
         self._env_context = env_context
         self._max_input_length = max_input_length
@@ -113,6 +127,15 @@ class CoPawAgent(ReActAgent):
         self._session_id = session_id
         self._rule_manager = rule_manager
         self._persona_manager = persona_manager
+
+        # Multi-agent: Store agent instance manager (Phase 1)
+        self._agent_instance_manager = agent_instance_manager
+        self._agent_router: Optional["AgentRouter"] = None
+        self._is_expert_agent = is_expert_agent
+
+        # Initialize router if agent instance manager is provided
+        if agent_instance_manager is not None and AgentRouter is not None:
+            self._agent_router = AgentRouter(agent_instance_manager)
 
         # Memory compaction threshold: configurable ratio of max_input_length
         self._memory_compact_threshold = int(
@@ -131,9 +154,9 @@ class CoPawAgent(ReActAgent):
         # Create model and formatter using factory method
         model, formatter = create_model_and_formatter()
 
-        # Initialize parent ReActAgent
+        # Initialize parent ReActAgent with the provided name
         super().__init__(
-            name="Friday",
+            name=name,
             model=model,
             sys_prompt=sys_prompt,
             toolkit=toolkit,
@@ -183,6 +206,10 @@ class CoPawAgent(ReActAgent):
     def _register_skills(self, toolkit: Toolkit) -> None:
         """Load and register skills from working directory.
 
+        This method does two things:
+        1. Register skill descriptions (SKILL.md) via register_agent_skill()
+        2. Register Python functions from skill __init__.py as tool functions
+
         Args:
             toolkit: Toolkit to register skills to
         """
@@ -196,8 +223,12 @@ class CoPawAgent(ReActAgent):
             skill_dir = working_skills_dir / skill_name
             if skill_dir.exists():
                 try:
+                    # Register skill description (SKILL.md)
                     toolkit.register_agent_skill(str(skill_dir))
                     logger.debug("Registered skill: %s", skill_name)
+                except ValueError as e:
+                    # Skill already registered (normal in multi-agent scenarios)
+                    logger.debug("Skill already registered: %s - %s", skill_name, e)
                 except Exception as e:
                     logger.error(
                         "Failed to register skill '%s': %s",
@@ -205,20 +236,30 @@ class CoPawAgent(ReActAgent):
                         e,
                     )
 
+        # Auto-register Python functions from all skills as tool functions
+        # This enables agents to actually call the skill functions
+        registered_count = register_skill_tools(toolkit, working_skills_dir)
+        logger.info(f"Registered {registered_count} skill tool function(s)")
+
     def _build_sys_prompt(self) -> str:
         """Build system prompt from working dir files and env context.
 
         Returns:
             Complete system prompt string with rules and persona injected
         """
+        import asyncio
+
         sys_prompt = build_system_prompt_from_working_dir()
 
         # Enhancement: Inject persona (PR #2, #5)
         if self._persona_manager:
             try:
-                persona = self._persona_manager.get_active_persona(
-                    channel=self._channel,
-                    user_id=self._user_id,
+                # Try to get persona using asyncio.run or existing loop
+                persona = self._run_async(
+                    self._persona_manager.get_active_persona(
+                        channel=self._channel,
+                        user_id=self._user_id,
+                    )
                 )
                 if persona:
                     persona_section = (
@@ -234,10 +275,12 @@ class CoPawAgent(ReActAgent):
         # Enhancement: Inject rules (PR #1, #5)
         if self._rule_manager:
             try:
-                rules = self._rule_manager.get_active_rules(
-                    channel=self._channel,
-                    user_id=self._user_id,
-                    session_id=self._session_id,
+                rules = self._run_async(
+                    self._rule_manager.get_active_rules(
+                        channel=self._channel,
+                        user_id=self._user_id,
+                        session_id=self._session_id,
+                    )
                 )
                 if rules:
                     rules_section = "\n\n# 当前适用的规则约束\n"
@@ -253,6 +296,29 @@ class CoPawAgent(ReActAgent):
             sys_prompt = self._env_context + "\n\n" + sys_prompt
 
         return sys_prompt
+
+    def _run_async(self, coro):
+        """Run async coroutine in sync context.
+
+        Args:
+            coro: Async coroutine to run
+
+        Returns:
+            Result of the coroutine
+        """
+        import asyncio
+        try:
+            # Try to run in current event loop context
+            loop = asyncio.get_running_loop()
+            # If we're in a running loop, we need to run it differently
+            # This is a fallback for when called from async context
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(asyncio.run, coro)
+                return future.result()
+        except RuntimeError:
+            # No running loop, use asyncio.run directly
+            return asyncio.run(coro)
 
     def _setup_memory_manager(
         self,
@@ -337,7 +403,15 @@ class CoPawAgent(ReActAgent):
         msg: Msg | list[Msg] | None = None,
         structured_model: Type[BaseModel] | None = None,
     ) -> Msg:
-        """Override reply to process file blocks and handle commands.
+        """Override reply to process file blocks, handle commands, and route messages.
+
+        For the main PM agent (is_expert_agent=False):
+        1. Check if message should be routed to an expert agent
+        2. If routed, delegate to the expert agent
+        3. Otherwise, process normally
+
+        For expert agents (is_expert_agent=True):
+        - Process messages directly without routing
 
         Args:
             msg: Input message(s) from user
@@ -346,6 +420,12 @@ class CoPawAgent(ReActAgent):
         Returns:
             Response message
         """
+        # Log agent identity at the start of message processing
+        logger.info(
+            f"[Agent 处理] 开始处理消息 - Agent: {self.name} "
+            f"(id={getattr(self, 'id', 'N/A')}, is_expert={self._is_expert_agent})"
+        )
+
         # Process file and media blocks in messages
         if msg is not None:
             await process_file_and_media_blocks_in_message(msg)
@@ -362,5 +442,74 @@ class CoPawAgent(ReActAgent):
             await self.print(msg)
             return msg
 
-        # Normal message processing
+        # Multi-agent routing (Phase 1)
+        # Only the main PM agent performs routing, expert agents process directly
+        if not self._is_expert_agent and self._agent_router is not None:
+            # Get channel and user_id from memory or instance variables
+            # For now, use the instance variables set during initialization
+            logger.info(
+                f"[路由决策] 开始路由 - 当前 agent: {self.name} (id={getattr(self, 'id', 'N/A')}), "
+                f"channel={self._channel or 'console'}, user_id={self._user_id or 'default'}"
+            )
+
+            routing_result = await self._agent_router.route_request(
+                channel=self._channel or "console",
+                user_id=self._user_id or "default",
+                message=query,
+            )
+
+            # If a different agent is matched, delegate to it
+            if (
+                routing_result.matched_instance is not None
+                and routing_result.matched_instance.id != getattr(self, 'id', None)
+            ):
+                logger.info(
+                    f"[路由决策] 路由到专家 agent: {routing_result.matched_instance.name} "
+                    f"(id={routing_result.matched_instance.id}, type={routing_result.matched_instance.agent_type})\n"
+                    f"  - 路由原因：{routing_result.reason}\n"
+                    f"  - 优先级分数：{routing_result.priority_score}\n"
+                    f"  - 候选 agent 数量：{len(routing_result.all_candidates)}\n"
+                    f"  - 当前处理 agent: {self.name} (将进行委托)"
+                )
+
+                # Process with the matched expert agent
+                # Note: We get the agent instance and call reply directly so that
+                # the stream_printing_messages pipeline can capture its output
+                if self._agent_instance_manager is not None:
+                    expert_agent = await self._agent_instance_manager.get_or_create_agent(
+                        instance_id=routing_result.matched_instance.id,
+                        channel=self._channel,
+                        user_id=self._user_id,
+                        session_id=self._session_id,
+                    )
+                    if expert_agent is None:
+                        raise ValueError(
+                            f"Agent instance {routing_result.matched_instance.id} not found"
+                        )
+                    # Enable message queue for the expert agent so its output
+                    # can be captured by stream_printing_messages in the runner
+                    if hasattr(self, 'msg_queue') and self.msg_queue is not None:
+                        expert_agent.set_msg_queue_enabled(True, self.msg_queue)
+                    # Share the same memory with the main agent so that conversation
+                    # history is saved correctly
+                    expert_agent.memory = self.memory
+                    # The expert agent will use the same msg_queue and memory as this agent
+                    logger.info(
+                        f"[路由决策] 开始委托 - 消息将由 '{expert_agent.name}' 处理 (id={getattr(expert_agent, 'id', 'N/A')})"
+                    )
+                    return await expert_agent.reply(msg=msg, structured_model=structured_model)
+
+            # No routing needed - process with current agent
+            logger.info(
+                f"[路由决策] 无需路由 - 当前 agent '{self.name}' 直接处理消息 "
+                f"(routing_result.matched_instance={routing_result.matched_instance.name if routing_result.matched_instance else 'None'})"
+            )
+
+        # Expert agent processing directly (no routing)
+        elif self._is_expert_agent:
+            logger.info(
+                f"[Agent 处理] 专家 agent '{self.name}' 直接处理消息 (跳过路由)"
+            )
+
+        # Normal message processing (no routing or expert agent)
         return await super().reply(msg=msg, structured_model=structured_model)

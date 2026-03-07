@@ -9,6 +9,30 @@ from agentscope.message import TextBlock
 from agentscope.tool import ToolResponse
 
 from ...constant import WORKING_DIR
+from ..schema import FileBlock
+
+
+async def _create_file_block(file_path: str, file_name: str) -> Optional[FileBlock]:
+    """Create a FileBlock for native channel file delivery.
+
+    Args:
+        file_path: Absolute file path
+        file_name: File name for display
+
+    Returns:
+        FileBlock instance or None if creation fails
+    """
+    try:
+        # Use file:// URL for local file access
+        absolute_path = os.path.abspath(file_path)
+        file_url = f"file://{absolute_path}"
+        return FileBlock(
+            type="file",
+            source={"type": "url", "url": file_url},
+            filename=file_name,
+        )
+    except Exception:
+        return None
 
 
 def _resolve_file_path(file_path: str) -> str:
@@ -167,13 +191,42 @@ async def write_file(
     try:
         with open(file_path, "w", encoding="utf-8") as file:
             file.write(content)
-        return ToolResponse(
-            content=[
+
+        # Get relative path for download URL
+        try:
+            relative_path = Path(file_path).relative_to(WORKING_DIR)
+            download_url = f"/api/workspace/files/{str(relative_path)}"
+            file_name = relative_path.name
+        except ValueError:
+            # File is outside WORKING_DIR, no download URL
+            download_url = None
+            file_name = Path(file_path).name
+
+        # Build response parts
+        response_parts = [
+            TextBlock(
+                type="text",
+                text=f"Wrote {len(content)} bytes to `{file_path}`.",
+            ),
+        ]
+
+        # Add FileBlock for channels that support native file delivery
+        # (dingtalk, feishu, etc. will upload and send as native file)
+        file_block = await _create_file_block(file_path, file_name)
+        if file_block:
+            response_parts.append(file_block)
+
+        # Add markdown download link for Console Web
+        if download_url:
+            response_parts.append(
                 TextBlock(
                     type="text",
-                    text=f"Wrote {len(content)} bytes to {file_path}.",
+                    text=f"\n\n📥 [下载文件：{file_name}]({download_url})",
                 ),
-            ],
+            )
+
+        return ToolResponse(
+            content=response_parts,
         )
     except Exception as e:
         return ToolResponse(

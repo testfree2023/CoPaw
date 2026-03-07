@@ -23,6 +23,7 @@ from typing import Optional, Tuple, List
 
 from .task_models import TaskSpec, TaskType, TaskStatus
 from .task_queue import TaskQueue
+from .task_verifier import TaskVerifier
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +41,13 @@ class TaskClassifier:
         # Chinese
         "创建", "删除", "修改", "设置", "启动", "停止", "执行", "运行",
         "添加", "移除", "更新", "打开", "关闭", "保存", "发送",
+        # Analysis/Stock related
+        "分析", "评估", "研究", "调查", "查询", "获取", "检查", "查看",
         # English
         "create", "delete", "modify", "set", "start", "stop", "execute",
         "run", "add", "remove", "update", "open", "close", "save", "send",
+        # Analysis/Stock related
+        "analyze", "evaluate", "research", "investigate", "check", "get",
     ]
 
     # Keywords that indicate a rule
@@ -136,6 +141,7 @@ class TaskProcessor:
         rule_manager=None,
         persona_manager=None,
         agent=None,
+        cron_manager=None,
     ):
         """Initialize TaskProcessor.
 
@@ -143,14 +149,28 @@ class TaskProcessor:
             task_queue: TaskQueue for task management
             rule_manager: RuleManager for rule persistence (optional)
             persona_manager: PersonaManager for persona management (optional)
-            agent: Agent for LLM-based classification (optional)
+            agent: Agent for LLM calls (optional)
+            cron_manager: CronManager for cron verification (optional)
         """
         self.task_queue = task_queue
         self.rule_manager = rule_manager
         self.persona_manager = persona_manager
         self.agent = agent
+        self.cron_manager = cron_manager
         self._running = False
         self._worker_task: Optional[asyncio.Task] = None
+        
+        # Initialize verifier
+        self.verifier = TaskVerifier(cron_manager=cron_manager)
+
+    def set_agent(self, agent) -> None:
+        """Set agent for instruction execution.
+
+        Args:
+            agent: CoPawAgent instance for LLM calls
+        """
+        self.agent = agent
+        logger.debug("TaskProcessor agent set")
 
     async def start(self) -> None:
         """Start the task processing loop."""
@@ -216,19 +236,18 @@ class TaskProcessor:
         Args:
             task: Instruction task to handle
         """
-        # For now, we just mark it as completed
-        # In real implementation, this would call the agent
         logger.info(f"Handling instruction: {task.query}")
 
-        # Placeholder - actual implementation would call agent
-        response = f"Instruction executed: {task.query}"
+        # Call agent for instruction execution
+        response = await self._execute_with_agent(task)
 
-        # Verify the result
-        verified, details = await self._verify_instruction(task, response)
+        # Verify the result using TaskVerifier
+        verified, details = await self.verifier.verify(task, response)
 
         if verified:
             await self.task_queue.complete(task.id, response)
-            logger.info(f"Task {task.id} completed successfully")
+            self.task_queue.mark_verified(task.id, True, details)
+            logger.info(f"Task {task.id} completed and verified successfully")
         else:
             # Retry if possible
             if task.can_retry():
@@ -238,6 +257,38 @@ class TaskProcessor:
                 await self.task_queue.enqueue(task)
             else:
                 await self.task_queue.fail(task.id, f"Verification failed: {details}")
+                logger.error(f"Task {task.id} failed after max retries: {details}")
+
+    async def _execute_with_agent(self, task: TaskSpec) -> str:
+        """Execute instruction using CoPawAgent.
+
+        Args:
+            task: The instruction task
+
+        Returns:
+            Agent response string
+        """
+        if self.agent is None:
+            logger.warning("No agent available, using placeholder response")
+            return f"Instruction executed (no agent): {task.query}"
+
+        try:
+            from agentscope.message import Msg
+            
+            # Create user message
+            user_msg = Msg(name="user", content=task.query, role="user")
+            
+            # Call agent
+            response_msg = await self.agent.reply(user_msg)
+            
+            # Extract text content from response
+            if hasattr(response_msg, 'get_text_content'):
+                return response_msg.get_text_content() or str(response_msg)
+            return str(response_msg)
+            
+        except Exception as e:
+            logger.exception(f"Agent execution failed: {e}")
+            raise
 
     async def _handle_rule(self, task: TaskSpec) -> None:
         """Handle a rule task.
@@ -290,91 +341,24 @@ class TaskProcessor:
     async def _handle_conversation(self, task: TaskSpec) -> None:
         """Handle a conversation task.
 
+        For complex conversations like stock analysis, call the agent
+        and record the result as a task.
+
         Args:
             task: Conversation task to handle
         """
-        logger.debug(f"Handling conversation: {task.query}")
+        logger.info(f"Handling conversation: {task.query}")
 
-        # For conversation, just pass through
-        # Actual implementation would call the agent
-        response = f"Conversation response to: {task.query}"
+        # Call agent for conversation
+        response = await self._execute_with_agent(task)
+
+        # Complete the task with agent response
         await self.task_queue.complete(task.id, response)
+        logger.info(f"Task {task.id} completed with conversation response")
 
-    async def _verify_instruction(
-        self,
-        task: TaskSpec,
-        response: str,
-    ) -> Tuple[bool, str]:
-        """Verify an instruction execution result.
-
-        Args:
-            task: The instruction task
-            response: Agent response
-
-        Returns:
-            Tuple of (success, details)
-        """
-        query_lower = task.query.lower()
-
-        # Check for cron/task related keywords
-        if any(kw in query_lower for kw in ["cron", "定时", "任务", "job"]):
-            return await self._verify_cron_task(response)
-
-        # Check for file operations
-        if any(kw in query_lower for kw in ["file", "文件", "write", "read", "save"]):
-            return await self._verify_file_operation(task.query, response)
-
-        # Default: assume success
-        return True, ""
-
-    async def _verify_cron_task(self, response: str) -> Tuple[bool, str]:
-        """Verify a cron task creation.
-
-        Args:
-            response: Agent response
-
-        Returns:
-            Tuple of (success, details)
-        """
-        # Check for success indicators
-        success_indicators = [
-            "job_id", "job created", "任务创建", "定时任务",
-            "scheduled", "created successfully",
-        ]
-        response_lower = response.lower()
-
-        for indicator in success_indicators:
-            if indicator.lower() in response_lower:
-                return True, ""
-
-        return False, "Response does not indicate successful cron creation"
-
-    async def _verify_file_operation(
-        self,
-        query: str,
-        response: str,
-    ) -> Tuple[bool, str]:
-        """Verify a file operation.
-
-        Args:
-            query: Original query
-            response: Agent response
-
-        Returns:
-            Tuple of (success, details)
-        """
-        # Check for success indicators
-        success_indicators = [
-            "success", "完成", "成功", "saved", "created", "written",
-            "文件已", "已保存",
-        ]
-        response_lower = response.lower()
-
-        for indicator in success_indicators:
-            if indicator.lower() in response_lower:
-                return True, ""
-
-        return False, "Response does not indicate successful file operation"
+    # Note: Verification is now handled by TaskVerifier class
+    # The _verify_instruction, _verify_cron_task, and _verify_file_operation
+    # methods have been moved to task_verifier.py for better organization
 
     async def reprocess_failed_task(self, task: TaskSpec) -> None:
         """Reprocess a failed task.

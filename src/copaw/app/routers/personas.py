@@ -41,7 +41,7 @@ class PersonaCreate(BaseModel):
     system_prompt_addon: str
     scope: PersonaScopeEnum = PersonaScopeEnum.GLOBAL
     channel: Optional[str] = None
-    user_id: Optional[str] = None
+    user_ids: Optional[str] = None  # Space-separated user IDs
 
 
 class PersonaUpdate(BaseModel):
@@ -50,6 +50,9 @@ class PersonaUpdate(BaseModel):
     description: Optional[str] = None
     system_prompt_addon: Optional[str] = None
     enabled: Optional[bool] = None
+    scope: Optional[str] = None
+    channel: Optional[str] = None
+    user_ids: Optional[str] = None
 
 
 @router.get("")
@@ -70,7 +73,7 @@ async def create_persona(persona: PersonaCreate):
         system_prompt_addon=persona.system_prompt_addon,
         scope=PersonaScope(persona.scope.value),
         channel=persona.channel,
-        user_id=persona.user_id,
+        user_ids=persona.user_ids,
     )
     return {"persona": new_persona.model_dump()}
 
