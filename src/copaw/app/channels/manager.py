@@ -484,6 +484,11 @@ class ChannelManager:
             (session_id or "")[:40],
             (to_handle or "")[:60],
         )
+        logger.info(
+            "channel send_text [DEBUG]: raw session_id=%r to_handle=%r",
+            session_id,
+            to_handle,
+        )
 
         # Keep the same behavior as the agent pipeline:
         # if the channel has a fixed bot prefix, merge it into meta so

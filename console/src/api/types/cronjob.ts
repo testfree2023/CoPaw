@@ -55,3 +55,20 @@ export interface CronJobView extends CronJobSpecOutput {
 export type CronJobSpecInputLegacy = Record<string, unknown>;
 export type CronJobSpecOutputLegacy = Record<string, unknown>;
 export type CronJobViewLegacy = Record<string, unknown>;
+
+export interface CronExecutionRecord {
+  id: string;
+  job_id: string;
+  job_name: string;
+  triggered_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  status: "pending" | "running" | "success" | "error" | "timeout";
+  error_message?: string | null;
+  trigger_source: "schedule" | "manual";
+  channel?: string | null;
+  user_id?: string | null;
+  session_id?: string | null;
+  task_type?: "text" | "agent" | null;
+  duration_ms?: number | null;
+}

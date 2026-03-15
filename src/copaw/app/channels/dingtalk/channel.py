@@ -198,7 +198,14 @@ class DingTalkChannel(BaseChannel):
     def to_handle_from_target(self, *, user_id: str, session_id: str) -> str:
         # Key by session_id (short suffix of conversation_id) so cron can
         # use the same session_id to look up stored sessionWebhook.
-        return f"dingtalk:sw:{session_id}"
+        result = f"dingtalk:sw:{session_id}"
+        logger.info(
+            "dingtalk to_handle_from_target: user_id=%s session_id=%s -> %s",
+            (user_id or "")[:40],
+            (session_id or "")[:40],
+            result[:60],
+        )
+        return result
 
     def _route_from_handle(self, to_handle: str) -> dict:
         # to_handle:
@@ -225,7 +232,16 @@ class DingTalkChannel(BaseChannel):
     def _load_session_webhook_store_from_disk(self) -> None:
         """Load session webhook mapping from disk into memory."""
         path = self._session_webhook_store_path()
+        logger.info(
+            "DingTalkChannel._load_session_webhook_store_from_disk: path=%s exists=%s",
+            path,
+            path.is_file(),
+        )
         if not path.is_file():
+            logger.warning(
+                "DingTalkChannel._load_session_webhook_store_from_disk: file not found at %s",
+                path,
+            )
             return
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -234,6 +250,10 @@ class DingTalkChannel(BaseChannel):
                 for k, v in data.items():
                     if isinstance(v, str) and v:
                         self._session_webhook_store[k] = v
+            logger.info(
+                "DingTalkChannel._load_session_webhook_store_from_disk: loaded %d webhooks",
+                len(self._session_webhook_store),
+            )
         except Exception:
             logger.debug(
                 "dingtalk load session_webhook store from %s failed",
@@ -445,15 +465,33 @@ class DingTalkChannel(BaseChannel):
                 errcode = body_json.get("errcode", 0)
                 errmsg = body_json.get("errmsg", "")
                 if errcode != 0:
-                    logger.warning(
-                        "dingtalk sessionWebhook POST API error: msgtype=%s "
-                        "session_from_url=%s errcode=%s errmsg=%s body=%s",
-                        msgtype,
-                        session_in_url,
-                        errcode,
-                        errmsg,
-                        body_text[:300],
-                    )
+                    # Check if this is a stale session error (errcode 300001 = "session 不存在")
+                    # If so, remove the stale session webhook from the store
+                    if errcode == 300001 and "session" in errmsg.lower():
+                        logger.warning(
+                            "dingtalk sessionWebhook: session expired (errcode=300001). "
+                            "User needs to send a new message to refresh the session."
+                        )
+                        # Try to remove the stale session webhook
+                        if session_in_url:
+                            webhook_key = f"dingtalk:sw:{session_in_url}"
+                            if webhook_key in self._session_webhook_store:
+                                del self._session_webhook_store[webhook_key]
+                                self._save_session_webhook_store_to_disk()
+                                logger.info(
+                                    "dingtalk sessionWebhook: removed stale session webhook: %s",
+                                    webhook_key,
+                                )
+                    else:
+                        logger.warning(
+                            "dingtalk sessionWebhook POST API error: msgtype=%s "
+                            "session_from_url=%s errcode=%s errmsg=%s body=%s",
+                            msgtype,
+                            session_in_url,
+                            errcode,
+                            errmsg,
+                            body_text[:300],
+                        )
                     return False
                 logger.info(
                     "dingtalk sessionWebhook POST ok: msgtype=%s status=%s "
@@ -992,6 +1030,35 @@ class DingTalkChannel(BaseChannel):
             len(text_parts),
             len(media_parts),
         )
+
+        # DING notifications disabled due to missing qyapi_create_ding permission
+        # ding_type = (meta or {}).get("ding_type")
+        # if ding_type and body.strip():
+        #     user_id = (meta or {}).get("user_id")
+        #     logger.info(
+        #         f"dingtalk send_content_parts: attempting DING {ding_type} to user_id={user_id}"
+        #     )
+        #     if user_id:
+        #         success = await self._send_ding(
+        #             user_id=user_id,
+        #             text=body.strip(),
+        #             ding_type=ding_type,
+        #             meta=meta,
+        #         )
+        #         if success:
+        #             logger.info(f"dingtalk send_content_parts: DING {ding_type} sent successfully")
+        #             if (
+        #                 m.get("reply_loop") is not None
+        #                 and m.get("reply_future") is not None
+        #             ):
+        #                 self._reply_sync(m, SENT_VIA_WEBHOOK)
+        #             return
+        #         logger.warning("dingtalk send_content_parts: DING failed, falling back to webhook")
+        #     else:
+        #         logger.warning(
+        #             "dingtalk send_content_parts: ding_type requested but user_id not provided"
+        #         )
+
         if session_webhook and (body.strip() or media_parts):
             if body.strip():
                 logger.info("dingtalk send_content_parts: sending text body")
@@ -1398,6 +1465,11 @@ class DingTalkChannel(BaseChannel):
             logger.debug("disabled by env DINGTALK_CHANNEL_ENABLED=0")
             return
         self._load_session_webhook_store_from_disk()
+        logger.info(
+            "DingTalkChannel.start: loaded %d session webhooks from disk. Keys: %s",
+            len(self._session_webhook_store),
+            list(self._session_webhook_store.keys()),
+        )
         if not self.client_id or not self.client_secret:
             raise RuntimeError(
                 "DINGTALK_CLIENT_ID and DINGTALK_CLIENT_SECRET are required "
@@ -1430,7 +1502,15 @@ class DingTalkChannel(BaseChannel):
         )
         self._stream_thread.start()
         if self._http is None:
-            self._http = aiohttp.ClientSession()
+            # Disable proxy to avoid routing requests to non-existent system proxy
+            # trust_env=False prevents reading HTTP_PROXY/HTTPS_PROXY from environment
+            self._http = aiohttp.ClientSession(
+                connector=aiohttp.TCPConnector(
+                    ssl=False,
+                    force_close=True,
+                ),
+                trust_env=False,
+            )
 
     async def stop(self) -> None:
         if not self.enabled:
@@ -1474,6 +1554,37 @@ class DingTalkChannel(BaseChannel):
 
         meta = meta or {}
 
+        # DING notifications disabled due to missing qyapi_create_ding permission
+        # ding_type = meta.get("ding_type")  # "app", "sms", "voice"
+
+        # logger.info(
+        #     f"DingTalkChannel.send: meta keys={list(meta.keys())}, ding_type={ding_type}"
+        # )
+
+        # if ding_type:
+        #     # Send DING message with strong reminder
+        #     user_id = meta.get("user_id")
+        #     logger.info(
+        #         f"DingTalkChannel.send: attempting DING {ding_type} to user_id={user_id}"
+        #     )
+        #     if not user_id:
+        #         logger.warning(
+        #             "DingTalkChannel.send: ding_type requested but user_id not provided. "
+        #             "Falling back to normal message."
+        #         )
+        #     else:
+        #         success = await self._send_ding(
+        #             user_id=user_id,
+        #             text=text,
+        #             ding_type=ding_type,
+        #             meta=meta,
+        #         )
+        #         if success:
+        #             logger.info(f"DingTalkChannel.send: DING {ding_type} sent successfully")
+        #             return
+        #         # Fallback to normal message if DING fails
+        #         logger.warning("DingTalkChannel.send: DING failed, falling back to normal message")
+
         # direct webhook provided in meta
         session_webhook = meta.get("session_webhook") or meta.get(
             "sessionWebhook",
@@ -1481,12 +1592,27 @@ class DingTalkChannel(BaseChannel):
 
         if not session_webhook:
             route = self._route_from_handle(to_handle)
+            logger.info(
+                "DingTalkChannel.send: to_handle=%s route=%s",
+                to_handle,
+                route,
+            )
             session_webhook = route.get("session_webhook")
             if not session_webhook:
                 webhook_key = route.get("webhook_key")
+                logger.info(
+                    "DingTalkChannel.send: no session_webhook in route, "
+                    "trying webhook_key=%s",
+                    webhook_key,
+                )
                 if webhook_key:
                     session_webhook = await self._load_session_webhook(
                         webhook_key,
+                    )
+                    logger.info(
+                        "DingTalkChannel.send: _load_session_webhook "
+                        "returned=%s",
+                        session_webhook,
                     )
 
         if not session_webhook:
@@ -1511,6 +1637,108 @@ class DingTalkChannel(BaseChannel):
             bot_prefix="",
         )
 
+    async def _send_ding(
+        self,
+        user_id: str,
+        text: str,
+        ding_type: str = "app",
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Send DING message with strong reminder.
+
+        Args:
+            user_id: DingTalk user ID to send DING to
+            text: Message content
+            ding_type: Type of DING - "app" (in-app), "sms" (SMS), "voice" (phone call)
+            meta: Additional metadata
+
+        Returns:
+            True on success, False on failure
+
+        Note:
+            - "app": Free, sends DING notification within DingTalk app
+            - "sms": Paid, sends SMS message
+            - "voice": Paid, makes phone call with TTS
+        """
+        if not self.enabled:
+            return False
+        if self._http is None:
+            return False
+
+        # Debug: log client_id presence
+        logger.info(
+            f"DingTalkChannel._send_ding: client_id present={bool(self.client_id)}, "
+            f"client_secret present={bool(self.client_secret)}"
+        )
+
+        try:
+            token = await self._get_access_token()
+
+            logger.info(f"DingTalkChannel._send_ding: got access_token (len={len(token) if token else 0})")
+
+            # Ding API endpoint (legacy oapi uses access_token query param, not Authorization header)
+            url = "https://oapi.dingtalk.com/topapi/ding/send"
+
+            # Build DING payload
+            ding_payload = {
+                "receiver_userids": user_id,
+                "msgtype": "text",
+                "text": {"content": text},
+                "msgtag": "1001",  # Default tag for notifications
+            }
+
+            # Add type-specific parameters
+            if ding_type == "app":
+                # In-app DING (free)
+                ding_payload["sound"] = "true"  # Play notification sound
+                ding_payload["remind_type"] = "2"  # Strong reminder
+            elif ding_type == "sms":
+                # SMS DING (paid)
+                ding_payload["remind_type"] = "3"
+            elif ding_type == "voice":
+                # Voice DING (paid)
+                ding_payload["remind_type"] = "4"
+
+            # Legacy oapi.dingtalk.com uses access_token query parameter
+            params = {"access_token": token}
+
+            logger.info(
+                f"DingTalkChannel._send_ding: user_id={user_id[:20]}, ding_type={ding_type}"
+            )
+
+            async with self._http.post(
+                url,
+                json=ding_payload,
+                params=params,
+            ) as resp:
+                data = await resp.json(content_type=None)
+                if resp.status >= 400 or not data.get("success", False):
+                    errcode = data.get("errcode")
+                    sub_code = data.get("sub_code")
+                    sub_msg = data.get("sub_msg", data.get("errmsg", ""))
+
+                    # Check for permission error and provide helpful guidance
+                    if sub_code == "60011" or "权限" in sub_msg or "scope" in sub_msg.lower():
+                        logger.error(
+                            f"DingTalk DING permission denied: errcode={errcode} "
+                            f"sub_code={sub_code}. The DingTalk application needs to have "
+                            f"the DING permission (qyapi_create_ding) enabled. "
+                            f"Please visit https://open-dev.dingtalk.com/appscope/apply "
+                            f"to apply for the permission. Response: {data}"
+                        )
+                    else:
+                        logger.warning(
+                            f"DingTalk DING failed: status={resp.status}, response={data}"
+                        )
+                    return False
+
+                logger.info(f"DingTalk DING sent successfully to {user_id[:20]}")
+                return True
+
+        except Exception as e:
+            logger.exception(f"DingTalk DING send failed: {e}")
+            return False
+
     async def _get_access_token(self) -> str:
         """Get and cache DingTalk accessToken for 1 hour (instance-level)."""
         if not self.client_id or not self.client_secret:
@@ -1518,11 +1746,13 @@ class DingTalkChannel(BaseChannel):
 
         now = asyncio.get_running_loop().time()
         if self._token_value and now < self._token_expires_at:
+            logger.info("DingTalk _get_access_token: returning cached token")
             return self._token_value
 
         async with self._token_lock:
             now = asyncio.get_running_loop().time()
             if self._token_value and now < self._token_expires_at:
+                logger.info("DingTalk _get_access_token: returning cached token (after lock)")
                 return self._token_value
 
             url = "https://api.dingtalk.com/v1.0/oauth2/accessToken"
@@ -1531,8 +1761,16 @@ class DingTalkChannel(BaseChannel):
                 "appSecret": self.client_secret,
             }
 
+            logger.info(
+                f"DingTalk _get_access_token: requesting from {url} "
+                f"with appKey={self.client_id[:20]}... appSecret={self.client_secret[:20]}..."
+            )
+
             async with self._http.post(url, json=payload) as resp:
                 data = await resp.json(content_type=None)
+                logger.info(
+                    f"DingTalk _get_access_token: status={resp.status} response={data}"
+                )
                 if resp.status >= 400:
                     raise RuntimeError(
                         f"get accessToken failed status={resp.status} "
@@ -1549,6 +1787,7 @@ class DingTalkChannel(BaseChannel):
             self._token_expires_at = (
                 asyncio.get_running_loop().time() + DINGTALK_TOKEN_TTL_SECONDS
             )
+            logger.info(f"DingTalk _get_access_token: got token (len={len(token)})")
             return token
 
     async def _get_message_file_download_url(

@@ -25,6 +25,7 @@ export interface CreateTaskFromTemplateRequest {
 
 /**
  * Task API functions
+ * Note: Use relative paths (without /api prefix) as request.ts adds /api automatically
  */
 export const taskApi = {
   /**
@@ -44,7 +45,7 @@ export const taskApi = {
     if (params?.channel) queryParams.append('channel', params.channel);
     if (params?.limit) queryParams.append('limit', String(params.limit));
 
-    return request<TaskListItem[]>(`/api/tasks${queryParams.toString() ? `?${queryParams.toString()}` : ''}`, {
+    return request<TaskListItem[]>(`/tasks${queryParams.toString() ? `?${queryParams.toString()}` : ''}`, {
       method: 'GET',
     });
   },
@@ -53,7 +54,7 @@ export const taskApi = {
    * Get task details by ID
    */
   getTask: (taskId: string) => {
-    return request<TaskSpec>(`/api/tasks/${taskId}`, {
+    return request<TaskSpec>(`/tasks/${taskId}`, {
       method: 'GET',
     });
   },
@@ -62,7 +63,7 @@ export const taskApi = {
    * Retry a failed task
    */
   retryTask: (taskId: string) => {
-    return request<{ status: string; message: string }>(`/api/tasks/${taskId}/retry`, {
+    return request<{ status: string; message: string }>(`/tasks/${taskId}/retry`, {
       method: 'POST',
     });
   },
@@ -71,7 +72,7 @@ export const taskApi = {
    * Manually verify a task
    */
   verifyTask: (taskId: string, success: boolean, details?: string) => {
-    return request<{ status: string; message: string }>(`/api/tasks/${taskId}/verify`, {
+    return request<{ status: string; message: string }>(`/tasks/${taskId}/verify`, {
       method: 'POST',
       body: JSON.stringify({ success, details }),
     });
@@ -81,7 +82,7 @@ export const taskApi = {
    * Create a new task
    */
   createTask: (task: CreateTaskRequest) => {
-    return request<TaskSpec>('/api/tasks', {
+    return request<TaskSpec>('/tasks', {
       method: 'POST',
       body: JSON.stringify(task),
     });
@@ -91,7 +92,7 @@ export const taskApi = {
    * Delete a task
    */
   deleteTask: (taskId: string) => {
-    return request<{ status: string; message: string }>(`/api/tasks/${taskId}`, {
+    return request<{ status: string; message: string }>(`/tasks/${taskId}`, {
       method: 'DELETE',
     });
   },
@@ -100,7 +101,7 @@ export const taskApi = {
    * Get task statistics summary
    */
   getTaskSummary: () => {
-    return request<TaskSummary>('/api/tasks/stats/summary', {
+    return request<TaskSummary>('/tasks/stats/summary', {
       method: 'GET',
     });
   },
@@ -110,8 +111,8 @@ export const taskApi = {
    */
   listTemplates: (category?: string) => {
     const url = category
-      ? `/api/tasks/templates?category=${category}`
-      : '/api/tasks/templates';
+      ? `/tasks/templates?category=${category}`
+      : '/tasks/templates';
     return request<{ templates: TaskTemplate[] }>(url, {
       method: 'GET',
     });
@@ -121,7 +122,7 @@ export const taskApi = {
    * Create a task from template
    */
   createTaskFromTemplate: (req: CreateTaskFromTemplateRequest) => {
-    return request<TaskSpec>('/api/tasks/from-template', {
+    return request<TaskSpec>('/tasks/from-template', {
       method: 'POST',
       body: JSON.stringify(req),
     });

@@ -160,7 +160,7 @@ const TaskDrawer: React.FC<TaskDrawerProps> = ({ task, onRetry, onDelete, ...dra
         )}
 
         {/* Verification Result */}
-        {task.verification_result !== undefined && (
+        {typeof task.verification_result === 'boolean' && (
           <>
             <Divider orientation="left">验证结果</Divider>
             {task.verification_result ? (

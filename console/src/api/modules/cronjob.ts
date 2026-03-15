@@ -3,6 +3,7 @@ import type {
   CronJobSpecInput,
   CronJobSpecOutput,
   CronJobView,
+  CronExecutionRecord,
 } from "../types";
 
 export const cronJobApi = {
@@ -50,4 +51,12 @@ export const cronJobApi = {
 
   getCronJobState: (jobId: string) =>
     request<unknown>(`/cron/jobs/${encodeURIComponent(jobId)}/state`),
+
+  getCronJobHistory: (jobId: string, limit: number = 50) =>
+    request<CronExecutionRecord[]>(
+      `/cron/jobs/${encodeURIComponent(jobId)}/history?limit=${limit}`,
+    ),
+
+  getRecentExecutions: (limit: number = 100) =>
+    request<CronExecutionRecord[]>(`/cron/executions?limit=${limit}`),
 };

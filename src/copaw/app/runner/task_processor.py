@@ -19,6 +19,7 @@ Example:
 import asyncio
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Optional, Tuple, List
 
 from .task_models import TaskSpec, TaskType, TaskStatus
@@ -27,7 +28,38 @@ from .task_verifier import TaskVerifier
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["TaskProcessor", "TaskClassifier"]
+__all__ = ["TaskProcessor", "TaskClassifier", "broadcast_progress"]
+
+# Maximum time to wait for agent to become available (in seconds)
+AGENT_WAIT_TIMEOUT = 60.0
+# Check interval for agent availability (in seconds)
+AGENT_WAIT_INTERVAL = 1.0
+
+# Global broadcaster reference (set by app initialization)
+_progress_broadcaster = None
+
+
+def set_progress_broadcaster(broadcaster) -> None:
+    """Set progress broadcaster for task processor."""
+    global _progress_broadcaster
+    _progress_broadcaster = broadcaster
+
+
+def broadcast_progress(task_id: str, event_type: str, **data) -> None:
+    """Broadcast progress event to WebSocket clients.
+
+    Args:
+        task_id: Task UUID
+        event_type: Event type (status/thought/tool/result/progress)
+        **data: Event data fields
+    """
+    if _progress_broadcaster is None:
+        return
+    # Schedule broadcast without blocking
+    asyncio.create_task(_progress_broadcaster.broadcast(task_id, {
+        "type": event_type,
+        **data,
+    }))
 
 
 class TaskClassifier:
@@ -132,7 +164,8 @@ class TaskProcessor:
         task_queue: TaskQueue instance
         rule_manager: RuleManager instance (optional)
         persona_manager: PersonaManager instance (optional)
-        agent: Agent instance for LLM calls (optional)
+        cron_manager: CronManager instance (optional)
+        agent_instance_manager: AgentInstanceManager instance (optional)
     """
 
     def __init__(
@@ -140,8 +173,9 @@ class TaskProcessor:
         task_queue: TaskQueue,
         rule_manager=None,
         persona_manager=None,
-        agent=None,
         cron_manager=None,
+        agent_instance_manager=None,
+        chat_manager=None,
     ):
         """Initialize TaskProcessor.
 
@@ -149,28 +183,92 @@ class TaskProcessor:
             task_queue: TaskQueue for task management
             rule_manager: RuleManager for rule persistence (optional)
             persona_manager: PersonaManager for persona management (optional)
-            agent: Agent for LLM calls (optional)
             cron_manager: CronManager for cron verification (optional)
+            agent_instance_manager: AgentInstanceManager for multi-agent routing (optional)
+            chat_manager: ChatManager for chat metadata updates (optional)
         """
         self.task_queue = task_queue
         self.rule_manager = rule_manager
         self.persona_manager = persona_manager
-        self.agent = agent
+        # Note: We don't store agent as a property - each task creates its own agent
+        # to avoid conflicts with real-time requests (agent instances are not thread-safe)
         self.cron_manager = cron_manager
+        self.agent_instance_manager = agent_instance_manager
+        self.chat_manager = chat_manager  # For updating chat metadata
         self._running = False
         self._worker_task: Optional[asyncio.Task] = None
-        
+
         # Initialize verifier
         self.verifier = TaskVerifier(cron_manager=cron_manager)
 
-    def set_agent(self, agent) -> None:
-        """Set agent for instruction execution.
+    async def _get_or_create_agent(self, channel: str, user_id: str, session_id: str):
+        """Create a new agent for task processing.
+
+        Note: We create a new agent for each task to avoid conflicts with
+        the agent used by real-time requests. Agent instances are not thread-safe.
 
         Args:
-            agent: CoPawAgent instance for LLM calls
+            channel: Channel identifier
+            user_id: User identifier
+            session_id: Session identifier
+
+        Returns:
+            CoPawAgent instance
         """
-        self.agent = agent
-        logger.debug("TaskProcessor agent set")
+        logger.info(f"Creating agent for task processing (channel={channel}, user_id={user_id})")
+
+        try:
+            from agentscope.message import Msg
+            from copaw.agents.react_agent import CoPawAgent
+            from copaw.app.runner.utils import build_env_context
+            from copaw.config import load_config
+            from copaw.constant import WORKING_DIR
+
+            # Build environment context
+            env_context = build_env_context(
+                session_id=session_id,
+                user_id=user_id,
+                channel=channel,
+                working_dir=str(WORKING_DIR),
+            )
+
+            # Load config
+            config = load_config()
+            max_iters = config.agents.running.max_iters
+            max_input_length = config.agents.running.max_input_length
+
+            # Get MCP clients from manager if available
+            mcp_clients = []
+            # Note: MCP manager is not directly accessible here, skip for now
+            # MCP clients will be registered via agent.register_mcp_clients()
+
+            # Create a NEW agent for each task (don't reuse self.agent to avoid conflicts)
+            agent = CoPawAgent(
+                env_context=env_context,
+                mcp_clients=mcp_clients,
+                memory_manager=None,  # Task processing doesn't need persistent memory
+                max_iters=max_iters,
+                max_input_length=max_input_length,
+                rule_manager=self.rule_manager,
+                persona_manager=self.persona_manager,
+                channel=channel,
+                user_id=user_id,
+                session_id=session_id,
+                agent_instance_manager=self.agent_instance_manager,
+            )
+
+            # Register MCP clients if available
+            await agent.register_mcp_clients()
+
+            # Don't set as self.agent - each task gets its own agent
+            # This avoids conflicts with real-time requests
+            logger.info("Agent created for task processing")
+
+            return agent
+
+        except Exception as e:
+            logger.exception(f"Failed to create agent for task: {e}")
+            raise
 
     async def start(self) -> None:
         """Start the task processing loop."""
@@ -191,13 +289,23 @@ class TaskProcessor:
 
     async def _process_loop(self) -> None:
         """Main processing loop."""
+        logger.info("TaskProcessor _process_loop started")
         while self._running:
             task = await self.task_queue.dequeue()
             if task:
+                logger.info(f"TaskProcessor dequeued task {task.id}")
                 try:
                     await self.process_task(task)
-                except asyncio.CancelledError:
-                    break
+                except asyncio.CancelledError as e:
+                    # Task was re-queued due to agent unavailability or max retries reached
+                    # Check if task was re-queued or should be failed
+                    if task.retry_count < task.max_retries:
+                        logger.debug(f"Task {task.id} re-queued, skipping error handling")
+                    else:
+                        # Max retries reached, mark task as failed
+                        logger.error(f"Task {task.id} failed: {e}")
+                        await self.task_queue.fail(task.id, str(e))
+                    continue
                 except Exception as e:
                     logger.exception(f"Error processing task {task.id}: {e}")
                     await self.task_queue.fail(task.id, str(e))
@@ -229,24 +337,72 @@ class TaskProcessor:
         """Handle an instruction task.
 
         Flow:
-        1. Execute instruction (via agent or direct)
-        2. Verify result
-        3. Retry if failed
+        1. Task is executed in real-time chat by runner
+        2. TaskProcessor verifies the result after completion
+        3. Retry if verification failed
 
         Args:
             task: Instruction task to handle
         """
         logger.info(f"Handling instruction: {task.query}")
 
-        # Call agent for instruction execution
-        response = await self._execute_with_agent(task)
+        # Task should already be completed by runner in real-time chat
+        # We only need to verify the result
+        if task.status != TaskStatus.COMPLETED or not task.llm_response:
+            # Task not completed yet - this shouldn't happen in normal flow
+            # Wait for runner to complete it first
+            logger.info(f"Task {task.id}: Not completed yet, waiting for runner...")
+            # Re-enqueue with delay to let runner complete it
+            await asyncio.sleep(0.5)  # Give runner time to complete
+            # Refresh task status from queue
+            fresh_task = await self.task_queue.get_task(task.id)
+            if fresh_task:
+                task = fresh_task
+
+        # Now verify the result
+        if task.status == TaskStatus.COMPLETED and task.llm_response:
+            response = task.llm_response
+            logger.info(f"Task {task.id}: Completed in chat, verifying result...")
+
+            # Broadcast existing result for WebSocket UI updates
+            broadcast_progress(task.id, "result", response=response)
+        else:
+            # Still not completed - something went wrong
+            logger.warning(f"Task {task.id}: Still not completed after waiting, skipping verification")
+            return
+
+        logger.info(f"Task {task.id}: Verifying result...")
 
         # Verify the result using TaskVerifier
         verified, details = await self.verifier.verify(task, response)
+        logger.info(f"Task {task.id}: Verification result: verified={verified}, details={details}")
 
         if verified:
+            logger.info(f"Task {task.id}: Completing task...")
             await self.task_queue.complete(task.id, response)
+            logger.info(f"Task {task.id}: Task completed in queue, marking as verified...")
             await self.task_queue.mark_verified(task.id, True, details)
+            broadcast_progress(task.id, "status", status="completed", verified=True)
+
+            # Update chat metadata with last message
+            if self.chat_manager is not None:
+                try:
+                    chat = await self.chat_manager.get_or_create_chat(
+                        task.session_id or "default",
+                        task.user_id or "default",
+                        task.channel or "console",
+                    )
+                    chat.meta["last_message"] = response[:200] if response else ""
+                    chat.meta["last_message_at"] = datetime.now(timezone.utc).isoformat()
+                    chat.updated_at = datetime.now(timezone.utc)
+                    await self.chat_manager.update_chat(chat)
+                    logger.info(f"Task {task.id}: Chat metadata updated")
+                except Exception as e:
+                    logger.warning(f"Task {task.id}: Failed to update chat metadata: {e}")
+
+            # Skip sending result to user - it was already shown in chat
+            # WebSocket broadcasts are still used for task list UI updates
+
             logger.info(f"Task {task.id} completed and verified successfully")
         else:
             # Retry if possible
@@ -254,9 +410,11 @@ class TaskProcessor:
                 logger.warning(f"Task {task.id} verification failed, retrying: {details}")
                 task.status = TaskStatus.PENDING
                 task.last_error = details
+                broadcast_progress(task.id, "status", status="retrying", reason=details)
                 await self.task_queue.enqueue(task)
             else:
                 await self.task_queue.fail(task.id, f"Verification failed: {details}")
+                broadcast_progress(task.id, "status", status="failed", error=details)
                 logger.error(f"Task {task.id} failed after max retries: {details}")
 
     async def _execute_with_agent(self, task: TaskSpec) -> str:
@@ -268,24 +426,45 @@ class TaskProcessor:
         Returns:
             Agent response string
         """
-        if self.agent is None:
-            logger.warning("No agent available, using placeholder response")
-            return f"Instruction executed (no agent): {task.query}"
+        # Get or create agent lazily
+        logger.info(f"Task {task.id}: Getting or creating agent...")
+        agent = await self._get_or_create_agent(
+            channel=task.channel or "console",
+            user_id=task.user_id or "default",
+            session_id=task.session_id or "default",
+        )
+        logger.info(f"Task {task.id}: Agent obtained, calling reply()...")
 
         try:
             from agentscope.message import Msg
-            
+
             # Create user message
             user_msg = Msg(name="user", content=task.query, role="user")
-            
-            # Call agent
-            response_msg = await self.agent.reply(user_msg)
-            
+
+            # Call agent with timeout to prevent blocking the process loop
+            logger.info(f"Task {task.id}: Calling agent.reply() with timeout=300s...")
+            response_msg = await asyncio.wait_for(
+                agent.reply(user_msg),
+                timeout=300.0  # 5 minute timeout
+            )
+            logger.info(f"Task {task.id}: agent.reply() returned")
+
             # Extract text content from response
+            logger.info(f"Task {task.id}: Extracting response content...")
             if hasattr(response_msg, 'get_text_content'):
-                return response_msg.get_text_content() or str(response_msg)
-            return str(response_msg)
-            
+                result = response_msg.get_text_content() or str(response_msg)
+            else:
+                result = str(response_msg)
+            logger.info(f"Task {task.id}: Response extracted: {result[:100]}...")
+            return result
+
+        except asyncio.CancelledError:
+            # Re-raise without logging error (task already re-queued or max retries reached)
+            logger.warning(f"Task {task.id}: Execution cancelled")
+            raise
+        except asyncio.TimeoutError:
+            logger.error(f"Agent execution timeout for task {task.id}")
+            raise TimeoutError(f"Agent execution timeout after 300s for task {task.id}")
         except Exception as e:
             logger.exception(f"Agent execution failed: {e}")
             raise

@@ -129,3 +129,35 @@ class CronJobState(BaseModel):
 class CronJobView(BaseModel):
     spec: CronJobSpec
     state: CronJobState = Field(default_factory=CronJobState)
+
+
+class CronExecutionRecord(BaseModel):
+    """Record of one cron job execution."""
+
+    id: str = Field(default_factory=lambda: "")  # generated UUID
+    job_id: str
+    job_name: str
+    triggered_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    status: Literal["pending", "running", "success", "error", "timeout"] = "pending"
+    error_message: Optional[str] = None
+    trigger_source: Literal["schedule", "manual"] = "schedule"
+    channel: Optional[str] = None
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    task_type: Optional[TaskType] = None
+    duration_ms: Optional[int] = None  # execution duration in milliseconds
+
+    model_config = ConfigDict(json_encoders={datetime: lambda v: v.isoformat()})
+
+    def model_dump(self, **kwargs):
+        # Override to handle datetime serialization
+        result = super().model_dump(**kwargs)
+        return result
+
+
+class ExecutionHistoryFile(BaseModel):
+    version: int = 1
+    records: list[CronExecutionRecord] = Field(default_factory=list)
+    max_records: int = 100  # Keep last N records per job

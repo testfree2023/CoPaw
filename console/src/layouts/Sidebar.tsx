@@ -73,6 +73,11 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
           label: t("nav.chat"),
           icon: <MessageCircle size={16} />,
         },
+        {
+          key: "tasks",
+          label: t("nav.tasks"),
+          icon: <ListTodo size={16} />,
+        },
       ],
     },
     {
@@ -94,11 +99,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
           key: "cron-jobs",
           label: t("nav.cronJobs"),
           icon: <CalendarClock size={16} />,
-        },
-        {
-          key: "tasks",
-          label: t("nav.tasks"),
-          icon: <ListTodo size={16} />,
         },
       ],
     },

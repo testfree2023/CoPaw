@@ -134,7 +134,7 @@ class TaskVerifier:
 
         try:
             # Get all jobs and check if any match the query
-            jobs = self.cron_manager.list_jobs()
+            jobs = await self.cron_manager.list_jobs()
             if not jobs:
                 return False, "没有找到已创建的定时任务"
 

@@ -167,7 +167,18 @@ async def get_chat(
     except Exception:
         return ChatHistory(messages=[])
 
-    memories = state.get("agent", {}).get("memory", [])
+    # Load memory from session state
+    # Memory can be stored as dict (with content/_compressed_summary) or list (legacy)
+    memory_data = state.get("agent", {}).get("memory", {})
+    if isinstance(memory_data, dict):
+        # New format: {'content': [...], '_compressed_summary': ''}
+        memories = memory_data
+    elif isinstance(memory_data, list):
+        # Legacy format: direct list of messages
+        memories = {"content": memory_data}
+    else:
+        memories = {"content": []}
+
     memory = CoPawInMemoryMemory()
     memory.load_state_dict(memories)
 

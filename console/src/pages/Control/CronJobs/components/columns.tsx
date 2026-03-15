@@ -13,6 +13,7 @@ interface ColumnHandlers {
   onExecuteNow: (job: CronJob) => void;
   onEdit: (job: CronJob) => void;
   onDelete: (jobId: string) => void;
+  onViewHistory: (job: CronJob) => void;
   t: TFunction;
 }
 
@@ -263,7 +264,7 @@ export const createColumns = (
     {
       title: handlers.t("cronJobs.action"),
       key: "action",
-      width: 240,
+      width: 320,
       fixed: "right",
       render: (_: unknown, record: CronJob) => {
         const menuItems: MenuProps["items"] = [
@@ -283,7 +284,21 @@ export const createColumns = (
         ];
 
         return (
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
+            <Button
+              type="link"
+              size="small"
+              onClick={() => handlers.onViewHistory(record)}
+            >
+              执行历史
+            </Button>
+            <Button
+              type="link"
+              size="small"
+              onClick={() => handlers.onExecuteNow(record)}
+            >
+              {handlers.t("cronJobs.executeNow")}
+            </Button>
             <Button
               type="link"
               size="small"
@@ -292,13 +307,6 @@ export const createColumns = (
               {record.enabled
                 ? handlers.t("cronJobs.disable")
                 : handlers.t("common.enable")}
-            </Button>
-            <Button
-              type="link"
-              size="small"
-              onClick={() => handlers.onExecuteNow(record)}
-            >
-              {handlers.t("cronJobs.executeNow")}
             </Button>
             <Dropdown menu={{ items: menuItems }} placement="bottomRight">
               <Button type="text" size="small" icon={<MoreOutlined />} />

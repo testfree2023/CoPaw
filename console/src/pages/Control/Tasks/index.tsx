@@ -13,6 +13,7 @@ import {
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { taskApi, type TaskListItem, type TaskSpec } from '@/api/modules/task';
+import { useTaskProgress } from '@/hooks/useTaskProgress';
 import styles from './index.module.less';
 import TaskDrawer from './components/TaskDrawer';
 import CreateTaskModal from './components/CreateTaskModal';
@@ -28,6 +29,9 @@ const TasksPage: React.FC = () => {
   const [selectedTask, setSelectedTask] = useState<TaskSpec | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [createModalOpen, setCreateModalOpen] = useState(false);
+
+  // Subscribe to task progress updates via WebSocket
+  const taskProgress = useTaskProgress(selectedTask?.id || null);
 
   // Filters
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -78,6 +82,28 @@ const TasksPage: React.FC = () => {
     loadTasks();
     loadSummary();
   }, [statusFilter, typeFilter]);
+
+  /**
+   * Refresh selected task details when WebSocket event received
+   */
+  useEffect(() => {
+    if (!selectedTask?.id || !taskProgress.status) return;
+
+    // Refresh task details when status changes
+    const refreshTaskDetails = async () => {
+      try {
+        const task = await taskApi.getTask(selectedTask.id);
+        setSelectedTask(task);
+        // Also refresh the task list to show updated status
+        loadTasks();
+        loadSummary();
+      } catch (error) {
+        console.error('Failed to refresh task details:', error);
+      }
+    };
+
+    refreshTaskDetails();
+  }, [taskProgress.status]);
 
   /**
    * Handle task click to open drawer

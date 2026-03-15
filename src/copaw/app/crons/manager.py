@@ -16,8 +16,9 @@ from ...config import get_heartbeat_config
 from ..console_push_store import append as push_store_append
 from .executor import CronExecutor
 from .heartbeat import parse_heartbeat_every, run_heartbeat_once
-from .models import CronJobSpec, CronJobState
+from .models import CronJobSpec, CronJobState, CronExecutionRecord
 from .repo.base import BaseJobRepository
+from .repo.execution_repo import ExecutionHistoryRepository
 
 HEARTBEAT_JOB_ID = "_heartbeat"
 
@@ -37,6 +38,7 @@ class CronManager:
         runner: Any,
         channel_manager: Any,
         timezone: str = "UTC",
+        execution_repo: Optional[ExecutionHistoryRepository] = None,
     ):
         self._repo = repo
         self._runner = runner
@@ -46,6 +48,7 @@ class CronManager:
             runner=runner,
             channel_manager=channel_manager,
         )
+        self._execution_repo = execution_repo
 
         self._lock = asyncio.Lock()
         self._states: Dict[str, CronJobState] = {}
@@ -59,8 +62,21 @@ class CronManager:
             jobs_file = await self._repo.load()
 
             self._scheduler.start()
+            logger.info(
+                "CronManager.start: loaded %d jobs from repo. Job IDs: %s",
+                len(jobs_file.jobs),
+                [job.id for job in jobs_file.jobs],
+            )
             for job in jobs_file.jobs:
                 await self._register_or_update(job)
+                logger.info(
+                    "CronManager.start: registered job id=%s name=%s cron=%s enabled=%s next_run=%s",
+                    job.id,
+                    job.name,
+                    job.schedule.cron,
+                    job.enabled,
+                    self._states.get(job.id, CronJobState()).next_run_at,
+                )
 
             # Default 30m heartbeat: one interval job using config
             hb = get_heartbeat_config()
@@ -73,6 +89,7 @@ class CronManager:
             )
 
             self._started = True
+            logger.info("CronManager started successfully")
 
     async def stop(self) -> None:
         async with self._lock:
@@ -91,6 +108,25 @@ class CronManager:
 
     def get_state(self, job_id: str) -> CronJobState:
         return self._states.get(job_id, CronJobState())
+
+    async def get_execution_history(
+        self,
+        job_id: str,
+        limit: int = 50,
+    ) -> list[CronExecutionRecord]:
+        """Get execution history for a job."""
+        if not self._execution_repo:
+            return []
+        return await self._execution_repo.get_records_by_job(job_id, limit)
+
+    async def get_recent_executions(
+        self,
+        limit: int = 100,
+    ) -> list[CronExecutionRecord]:
+        """Get recent execution history across all jobs."""
+        if not self._execution_repo:
+            return []
+        return await self._execution_repo.get_recent_records(limit)
 
     # ----- write/control -----
 
@@ -116,7 +152,11 @@ class CronManager:
         async with self._lock:
             self._scheduler.resume_job(job_id)
 
-    async def run_job(self, job_id: str) -> None:
+    async def run_job(
+        self,
+        job_id: str,
+        trigger_source: str = "manual",
+    ) -> None:
         """Trigger a job to run in the background (fire-and-forget).
 
         Raises KeyError if the job does not exist.
@@ -128,15 +168,16 @@ class CronManager:
             raise KeyError(f"Job not found: {job_id}")
         logger.info(
             "cron run_job (async): job_id=%s channel=%s task_type=%s "
-            "target_user_id=%s target_session_id=%s",
+            "target_user_id=%s target_session_id=%s trigger_source=%s",
             job_id,
             job.dispatch.channel,
             job.task_type,
             (job.dispatch.target.user_id or "")[:40],
             (job.dispatch.target.session_id or "")[:40],
+            trigger_source,
         )
         task = asyncio.create_task(
-            self._execute_once(job),
+            self._execute_once(job, trigger_source),
             name=f"cron-run-{job_id}",
         )
         task.add_done_callback(lambda t: self._task_done_cb(t, job))
@@ -218,17 +259,30 @@ class CronManager:
         )
 
     async def _scheduled_callback(self, job_id: str) -> None:
+        logger.info(
+            "cron _scheduled_callback: job_id=%s triggered",
+            job_id,
+        )
         job = await self._repo.get_job(job_id)
         if not job:
+            logger.warning(
+                "cron _scheduled_callback: job not found, id=%s",
+                job_id,
+            )
             return
 
-        await self._execute_once(job)
+        await self._execute_once(job, trigger_source="schedule")
 
         # refresh next_run
         aps_job = self._scheduler.get_job(job_id)
         st = self._states.get(job_id, CronJobState())
         st.next_run_at = aps_job.next_run_time if aps_job else None
         self._states[job_id] = st
+        logger.info(
+            "cron _scheduled_callback: job_id=%s completed, next_run=%s",
+            job_id,
+            st.next_run_at,
+        )
 
     async def _heartbeat_callback(self) -> None:
         """Run one heartbeat (HEARTBEAT.md as query, optional dispatch)."""
@@ -240,7 +294,11 @@ class CronManager:
         except Exception:  # pylint: disable=broad-except
             logger.exception("heartbeat run failed")
 
-    async def _execute_once(self, job: CronJobSpec) -> None:
+    async def _execute_once(
+        self,
+        job: CronJobSpec,
+        trigger_source: str = "schedule",
+    ) -> None:
         rt = self._rt.get(job.id)
         if not rt:
             rt = _Runtime(sem=asyncio.Semaphore(job.runtime.max_concurrency))
@@ -251,23 +309,85 @@ class CronManager:
             st.last_status = "running"
             self._states[job.id] = st
 
+            # Create execution record
+            record = CronExecutionRecord(
+                job_id=job.id,
+                job_name=job.name,
+                triggered_at=datetime.now(timezone.utc),
+                started_at=datetime.now(timezone.utc),
+                status="running",
+                trigger_source=trigger_source,  # type: ignore
+                channel=job.dispatch.channel,
+                user_id=job.dispatch.target.user_id,
+                session_id=job.dispatch.target.session_id,
+                task_type=job.task_type,
+            )
+
+            # Save initial record
+            if self._execution_repo:
+                asyncio.create_task(self._execution_repo.add_record(record))
+
             try:
                 await self._executor.execute(job)
                 st.last_status = "success"
                 st.last_error = None
+                record.status = "success"  # type: ignore
+                record.completed_at = datetime.now(timezone.utc)
+                record.duration_ms = int(
+                    (record.completed_at - record.started_at).total_seconds()
+                    * 1000
+                )
                 logger.info(
                     "cron _execute_once: job_id=%s status=success",
                     job.id,
                 )
+            except asyncio.TimeoutError as e:
+                st.last_status = "error"
+                st.last_error = repr(e)
+                record.status = "timeout"  # type: ignore
+                record.error_message = f"Timeout: {repr(e)}"
+                record.completed_at = datetime.now(timezone.utc)
+                record.duration_ms = int(
+                    (record.completed_at - record.started_at).total_seconds()
+                    * 1000
+                )
+                logger.warning(
+                    "cron _execute_once: job_id=%s status=timeout error=%s",
+                    job.id,
+                    repr(e),
+                )
+                # Update record
+                if self._execution_repo:
+                    asyncio.create_task(
+                        self._execution_repo.update_record(record)
+                    )
+                raise
             except Exception as e:  # pylint: disable=broad-except
                 st.last_status = "error"
                 st.last_error = repr(e)
+                record.status = "error"  # type: ignore
+                record.error_message = repr(e)
+                record.completed_at = datetime.now(timezone.utc)
+                record.duration_ms = int(
+                    (record.completed_at - record.started_at).total_seconds()
+                    * 1000
+                )
                 logger.warning(
                     "cron _execute_once: job_id=%s status=error error=%s",
                     job.id,
                     repr(e),
                 )
+                # Update record
+                if self._execution_repo:
+                    asyncio.create_task(
+                        self._execution_repo.update_record(record)
+                    )
                 raise
             finally:
                 st.last_run_at = datetime.now(timezone.utc)
                 self._states[job.id] = st
+                # Final update of record
+                if self._execution_repo:
+                    asyncio.create_task(
+                        self._execution_repo.update_record(record)
+                    )

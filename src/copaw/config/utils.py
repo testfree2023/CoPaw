@@ -5,13 +5,18 @@ import json
 from pathlib import Path
 from typing import Optional, Tuple
 
-from ..constant import HEARTBEAT_FILE, JOBS_FILE, CHATS_FILE, WORKING_DIR
+from ..constant import HEARTBEAT_FILE, JOBS_FILE, CHATS_FILE, CRON_HISTORY_FILE, WORKING_DIR
 from .config import Config, HeartbeatConfig, LastApiConfig, LastDispatchConfig
 
 
 def get_config_path() -> Path:
     """Get the path to the config file."""
     return WORKING_DIR.joinpath("config.json")
+
+
+def get_cron_history_path() -> Path:
+    """Return cron execution history.json path."""
+    return (WORKING_DIR / CRON_HISTORY_FILE).expanduser()
 
 
 def get_heartbeat_query_path() -> Path:

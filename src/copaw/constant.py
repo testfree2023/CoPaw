@@ -12,6 +12,8 @@ JOBS_FILE = os.environ.get("COPAW_JOBS_FILE", "jobs.json")
 
 CHATS_FILE = os.environ.get("COPAW_CHATS_FILE", "chats.json")
 
+CRON_HISTORY_FILE = os.environ.get("COPAW_CRON_HISTORY_FILE", "cron_history.json")
+
 CONFIG_FILE = os.environ.get("COPAW_CONFIG_FILE", "config.json")
 
 HEARTBEAT_FILE = os.environ.get("COPAW_HEARTBEAT_FILE", "HEARTBEAT.md")

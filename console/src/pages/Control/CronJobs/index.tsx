@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import {
   createColumns,
   JobDrawer,
+  ExecutionHistoryDrawer,
   useCronJobs,
   DEFAULT_FORM_VALUES,
 } from "./components";
@@ -24,7 +25,9 @@ function CronJobsPage() {
     executeNow,
   } = useCronJobs();
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false);
   const [editingJob, setEditingJob] = useState<CronJob | null>(null);
+  const [viewingHistoryJob, setViewingHistoryJob] = useState<CronJob | null>(null);
   const [form] = Form.useForm<CronJob>();
 
   const handleCreate = () => {
@@ -81,6 +84,11 @@ function CronJobsPage() {
     });
   };
 
+  const handleViewHistory = (job: CronJob) => {
+    setViewingHistoryJob(job);
+    setHistoryDrawerOpen(true);
+  };
+
   const handleDrawerClose = () => {
     setDrawerOpen(false);
     setEditingJob(null);
@@ -119,6 +127,7 @@ function CronJobsPage() {
     onExecuteNow: handleExecuteNow,
     onEdit: handleEdit,
     onDelete: handleDelete,
+    onViewHistory: handleViewHistory,
     t,
   });
 
@@ -155,6 +164,15 @@ function CronJobsPage() {
         form={form}
         onClose={handleDrawerClose}
         onSubmit={handleSubmit}
+      />
+
+      <ExecutionHistoryDrawer
+        open={historyDrawerOpen}
+        job={viewingHistoryJob}
+        onClose={() => {
+          setHistoryDrawerOpen(false);
+          setViewingHistoryJob(null);
+        }}
       />
     </div>
   );

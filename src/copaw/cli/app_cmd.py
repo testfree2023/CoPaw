@@ -63,6 +63,12 @@ def app_cmd(
     # Persist last used host/port for other terminals
     write_last_api(host, port)
     os.environ[LOG_LEVEL_ENV] = log_level
+
+    # Disable system proxy to prevent requests from being routed to non-existent proxy
+    # This fixes macOS system proxy configuration issues
+    os.environ["NO_PROXY"] = "localhost,127.0.0.1,0.0.0.0"
+    os.environ["no_proxy"] = "localhost,127.0.0.1,0.0.0.0"
+
     setup_logger(log_level)
     if log_level in ("debug", "trace"):
         from .main import log_init_timings

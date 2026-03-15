@@ -34,7 +34,7 @@ from .tools import (
     send_file_to_user,
     write_file,
 )
-from .skill_toolkit import register_skill_tools
+from .skill_toolkit import register_skill_tools, set_skill_context
 from .utils import process_file_and_media_blocks_in_message
 from ..agents.memory import MemoryManager
 from ..config import load_config
@@ -420,6 +420,18 @@ class CoPawAgent(ReActAgent):
         Returns:
             Response message
         """
+        # Set skill context before processing so skill functions can access
+        # current channel/user/session (e.g., for cron job creation)
+        set_skill_context(
+            channel=self._channel,
+            user_id=self._user_id,
+            session_id=self._session_id,
+        )
+        logger.debug(
+            f"[Skill Context] 设置 context: channel={self._channel}, "
+            f"user_id={(self._user_id or '')[:20]}, session_id={(self._session_id or '')[:20]}"
+        )
+
         # Log agent identity at the start of message processing
         logger.info(
             f"[Agent 处理] 开始处理消息 - Agent: {self.name} "

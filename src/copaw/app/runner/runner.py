@@ -3,8 +3,10 @@
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
+from agentscope.message import Msg
 from agentscope.pipeline import stream_printing_messages
 from agentscope_runtime.engine.runner import Runner
 from agentscope_runtime.engine.schemas.agent_schemas import AgentRequest
@@ -164,6 +166,7 @@ class AgentRunner(Runner):
 
         agent = None
         chat = None
+        chat_updated = False  # Track if chat metadata was updated
 
         try:
             session_id = request.session_id
@@ -211,7 +214,7 @@ class AgentRunner(Runner):
             max_iters = config.agents.running.max_iters
             max_input_length = config.agents.running.max_input_length
 
-            # Task integration: Create task for all messages for tracking
+            # Task integration: Create task only for INSTRUCTION/RULE types
             task_created = False
             created_task_id = None
             task_type = None
@@ -220,45 +223,29 @@ class AgentRunner(Runner):
                 from .task_processor import TaskClassifier
                 task_type = TaskClassifier.classify(message_text)
 
-                # Create task for all types (for tracking/history)
-                task = TaskSpec(
-                    user_id=user_id,
-                    channel=channel,
-                    session_id=session_id,
-                    type=task_type,
-                    query=message_text,
-                    status=TaskStatus.PENDING,
-                )
-                await self._task_queue.enqueue(task)
-                task_created = True
-                created_task_id = task.id
-                logger.info(f"Task created: {task.id} (type={task_type})")
+                # Only create tasks for INSTRUCTION/RULE types, not CONVERSATION
+                # Also skip Heartbeat tasks (user_id="main", session_id="main")
+                if task_type in [TaskType.INSTRUCTION, TaskType.RULE]:
+                    # Skip Heartbeat tasks - they are system tasks, not user tasks
+                    is_heartbeat = (user_id == "main" and session_id == "main")
+                    if not is_heartbeat:
+                        task = TaskSpec(
+                            user_id=user_id,
+                            channel=channel,
+                            session_id=session_id,
+                            type=task_type,
+                            query=message_text,
+                            status=TaskStatus.PENDING,
+                        )
+                        await self._task_queue.enqueue(task)
+                        task_created = True
+                        created_task_id = task.id
+                        logger.info(f"Task created: {task.id} (type={task_type})")
+                    else:
+                        logger.debug("Skipping task creation for Heartbeat query")
 
-            # For INSTRUCTION/RULE, create agent first (needed by TaskProcessor)
-            # then return early and let TaskProcessor handle in background
-            # For CONVERSATION, continue to process in real-time
-            if task_type in [TaskType.INSTRUCTION, TaskType.RULE]:
-                # Create agent for TaskProcessor to use
-                agent = self._create_agent(
-                    env_context=env_context,
-                    mcp_clients=mcp_clients,
-                    max_iters=max_iters,
-                    max_input_length=max_input_length,
-                    channel=channel,
-                    user_id=user_id,
-                    session_id=session_id,
-                )
-                # Set agent for task processor
-                if self._task_processor is not None:
-                    self._task_processor.set_agent(agent)
-                await agent.register_mcp_clients()
-
-                # Return early to indicate task was queued
-                task_msg = f"任务已创建 (ID: {created_task_id})，正在后台处理..."
-                yield task_msg, True
-                return
-
-            # For CONVERSATION, create agent and process in real-time
+            # Continue to process ALL types in real-time through the agent
+            # Task is only for tracking/verification, not for replacing chat
             agent = self._create_agent(
                 env_context=env_context,
                 mcp_clients=mcp_clients,
@@ -269,9 +256,8 @@ class AgentRunner(Runner):
                 session_id=session_id,
             )
 
-            # Set agent for task processor (for instruction execution)
-            if self._task_processor is not None:
-                self._task_processor.set_agent(agent)
+            # Note: We don't set agent for task processor anymore
+            # Each task creates its own agent to avoid conflicts
 
             await agent.register_mcp_clients()
             agent.set_console_output_enabled(enabled=False)
@@ -345,6 +331,7 @@ class AgentRunner(Runner):
                     pass
             raise
         finally:
+            # Save session state for all types
             if agent is not None:
                 logger.info(f"Saving session state: memory content count = {len(agent.memory.content)}")
                 await self.session.save_session_state(
@@ -353,19 +340,21 @@ class AgentRunner(Runner):
                     agent=agent,
                 )
 
+            # Update chat metadata
             if self._chat_manager is not None and chat is not None:
                 await self._chat_manager.update_chat(chat)
 
-            # Mark CONVERSATION task as completed (INSTRUCTION/RULE handled by TaskProcessor)
-            # Only update if task type is CONVERSATION to avoid conflicts with TaskProcessor
-            if task_created and created_task_id and task_type == TaskType.CONVERSATION:
+            # Mark task as completed after chat completes
+            # TaskProcessor will handle verification/retry in background
+            if task_created and created_task_id:
                 try:
                     # Get the last response message for the task result
                     last_response = ""
-                    if chat and hasattr(chat, 'last_message'):
-                        last_response = chat.last_message or ""
+                    if chat and chat.meta:
+                        last_response = chat.meta.get("last_message", "") or ""
+                    # Complete the task with the response
                     await self._task_queue.complete(created_task_id, last_response)
-                    logger.debug(f"Conversation task {created_task_id} marked as completed")
+                    logger.debug(f"Task {created_task_id} marked as completed")
                 except Exception:
                     pass  # Don't fail the whole request if task update fails
 

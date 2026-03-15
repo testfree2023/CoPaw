@@ -27,12 +27,13 @@ class CronExecutor:
         dispatch_meta: Dict[str, Any] = dict(job.dispatch.meta or {})
         logger.info(
             "cron execute: job_id=%s channel=%s task_type=%s "
-            "target_user_id=%s target_session_id=%s",
+            "target_user_id=%s target_session_id=%s dispatch_meta=%s",
             job.id,
             job.dispatch.channel,
             job.task_type,
             target_user_id[:40] if target_user_id else "",
             target_session_id[:40] if target_session_id else "",
+            dispatch_meta,
         )
 
         if job.task_type == "text" and job.text:

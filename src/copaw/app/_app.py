@@ -15,7 +15,7 @@ from ..config import (  # pylint: disable=no-name-in-module
     update_last_dispatch,
     ConfigWatcher,
 )
-from ..config.utils import get_jobs_path, get_chats_path, get_config_path
+from ..config.utils import get_jobs_path, get_chats_path, get_config_path, get_cron_history_path
 from ..constant import DOCS_ENABLED, LOG_LEVEL_ENV
 from ..__version__ import __version__
 from ..utils.logging import setup_logger
@@ -24,6 +24,7 @@ from .channels.utils import make_process_from_runner
 from .mcp import MCPClientManager, MCPConfigWatcher  # MCP hot-reload support
 from .runner.repo.json_repo import JsonChatRepository
 from .crons.repo.json_repo import JsonJobRepository
+from .crons.repo.execution_repo import ExecutionHistoryRepository
 from .crons.manager import CronManager
 from .runner.manager import ChatManager
 from .routers import router as api_router
@@ -35,7 +36,8 @@ try:
     from ..agents.persona import PersonaManager
     from ..agents.agent_instance import AgentInstanceManager, AgentRouter
     from .runner.task_queue import TaskQueue
-    from .runner.task_processor import TaskProcessor
+    from .runner.task_processor import TaskProcessor, set_progress_broadcaster
+    from .routers.task_ws import router as task_ws_router, set_task_queue as set_ws_task_queue, TaskProgressBroadcaster
     ENHANCEMENTS_AVAILABLE = True
 except ImportError:
     ENHANCEMENTS_AVAILABLE = False
@@ -45,6 +47,10 @@ except ImportError:
     AgentRouter = None
     TaskQueue = None
     TaskProcessor = None
+    set_progress_broadcaster = None
+    task_ws_router = None
+    set_ws_task_queue = None
+    TaskProgressBroadcaster = None
 
 # Apply log level on load so reload child process gets same level as CLI.
 logger = setup_logger(os.environ.get(LOG_LEVEL_ENV, "info"))
@@ -52,6 +58,20 @@ logger = setup_logger(os.environ.get(LOG_LEVEL_ENV, "info"))
 # Load persisted env vars into os.environ at module import time
 # so they are available before the lifespan starts.
 load_envs_into_environ()
+
+# Disable system proxy to prevent requests from being routed to non-existent proxy
+# This fixes macOS system proxy configuration issues
+os.environ["NO_PROXY"] = "localhost,127.0.0.1,0.0.0.0"
+os.environ["no_proxy"] = "localhost,127.0.0.1,0.0.0.0"
+# Also clear HTTP_PROXY/HTTPS_PROXY if set to localhost without a running proxy
+if os.environ.get("HTTP_PROXY", "").startswith("http://127.0.0.1"):
+    del os.environ["HTTP_PROXY"]
+if os.environ.get("HTTPS_PROXY", "").startswith("http://127.0.0.1"):
+    del os.environ["HTTPS_PROXY"]
+if os.environ.get("http_proxy", "").startswith("http://127.0.0.1"):
+    del os.environ["http_proxy"]
+if os.environ.get("https_proxy", "").startswith("http://127.0.0.1"):
+    del os.environ["https_proxy"]
 
 runner = AgentRunner()
 
@@ -87,11 +107,13 @@ async def lifespan(app: FastAPI):  # pylint: disable=too-many-statements
 
     # --- cron init/start ---
     repo = JsonJobRepository(get_jobs_path())
+    execution_repo = ExecutionHistoryRepository(get_cron_history_path())
     cron_manager = CronManager(
         repo=repo,
         runner=runner,
         channel_manager=channel_manager,
         timezone="UTC",
+        execution_repo=execution_repo,
     )
     await cron_manager.start()
 
@@ -155,10 +177,19 @@ async def lifespan(app: FastAPI):  # pylint: disable=too-many-statements
                 rule_manager=rule_manager,
                 persona_manager=persona_manager,
                 cron_manager=cron_manager,
+                agent_instance_manager=agent_instance_manager,
+                chat_manager=chat_manager,  # For updating chat metadata
             )
             await task_processor.start()
             runner.set_task_processor(task_processor)
             logger.debug("Task processor started")
+
+            # WebSocket broadcaster for task progress
+            if TaskProgressBroadcaster:
+                broadcaster = TaskProgressBroadcaster()
+                set_progress_broadcaster(broadcaster)
+                set_ws_task_queue(task_queue)
+                logger.debug("Task progress broadcaster initialized")
         except Exception:
             logger.exception("Failed to initialize enhancements")
             enhancements_enabled = False
@@ -275,6 +306,11 @@ def get_version():
     """Return the current CoPaw version."""
     return {"version": __version__}
 
+
+# WebSocket router for task progress streaming (MUST be before HTTP routers)
+# to avoid path conflicts with /api/tasks/{task_id}
+if task_ws_router:
+    app.include_router(task_ws_router, prefix="/api")
 
 app.include_router(api_router, prefix="/api")
 

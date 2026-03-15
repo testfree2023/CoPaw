@@ -102,9 +102,13 @@ async def list_tasks(
         completed = await _task_queue.list_completed(limit=limit)
         tasks.extend(completed)
 
-    # Apply filters
+    # Apply filters and deduplicate by task ID (a task can be in multiple queues)
     filtered = []
+    seen_ids = set()
     for task in tasks:
+        # Skip duplicates - keep the first occurrence (most relevant queue)
+        if task.id in seen_ids:
+            continue
         if user_id and task.user_id != user_id:
             continue
         if channel and task.channel != channel:
@@ -114,6 +118,7 @@ async def list_tasks(
         if status and task.status.value != status:
             continue
         filtered.append(task)
+        seen_ids.add(task.id)
 
     # Sort by created_at (newest first) and limit
     filtered.sort(key=lambda t: t.created_at, reverse=True)
@@ -277,17 +282,74 @@ async def delete_task(task_id: str) -> dict:
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
-    if task.status in [TaskStatus.PENDING, TaskStatus.PROCESSING]:
+    if task.status in [TaskStatus.PENDING, TaskStatus.PROCESSING, TaskStatus.WAITING_VERIFICATION, TaskStatus.REPROCESSING]:
         raise HTTPException(
             status_code=400,
-            detail="Cannot delete active tasks. Cancel processing first."
+            detail="Cannot delete active tasks. Use clear_all endpoint instead."
         )
 
     # Remove from completed queue
-    await _task_queue.remove_completed(task_id)
-    logger.info(f"Task {task_id} deleted")
+    removed = await _task_queue.remove_completed(task_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found in completed queue")
 
+    logger.info(f"Task {task_id} deleted")
     return {"status": "success", "message": f"Task {task_id} deleted"}
+
+
+@router.post("/clear-all")
+async def clear_all_tasks() -> dict:
+    """Clear all tasks (pending, processing, completed).
+
+    WARNING: This will delete ALL tasks including active ones!
+
+    Returns:
+        Status message
+    """
+    if _task_queue is None:
+        raise HTTPException(status_code=503, detail="Task queue not initialized")
+
+    await _task_queue.clear_all()
+    logger.info("All tasks cleared")
+    return {"status": "success", "message": "All tasks cleared"}
+
+
+@router.post("/clear-heartbeat")
+async def clear_heartbeat_tasks() -> dict:
+    """Clear all Heartbeat system tasks.
+
+    Heartbeat tasks are identified by user_id="main" and session_id="main".
+    These are system-generated tasks that should not be counted as user tasks.
+
+    Returns:
+        Status message with count of deleted tasks
+    """
+    if _task_queue is None:
+        raise HTTPException(status_code=503, detail="Task queue not initialized")
+
+    # Get all completed tasks
+    completed = await _task_queue.list_completed(limit=10000)
+
+    # Filter Heartbeat tasks
+    heartbeat_task_ids = [
+        task.id for task in completed
+        if task.user_id == "main" and task.session_id == "main"
+    ]
+
+    # Batch delete from memory
+    deleted_count = 0
+    async with _task_queue._lock:
+        for task_id in heartbeat_task_ids:
+            if task_id in _task_queue._completed:
+                del _task_queue._completed[task_id]
+                deleted_count += 1
+
+    # Persist once after all deletions
+    if deleted_count > 0:
+        await _task_queue._persist_completed()
+
+    logger.info(f"Deleted {deleted_count} Heartbeat tasks")
+    return {"status": "success", "message": f"Deleted {deleted_count} Heartbeat tasks", "deleted_count": deleted_count}
 
 
 @router.get("/stats/summary")

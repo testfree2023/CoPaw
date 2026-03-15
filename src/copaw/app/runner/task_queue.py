@@ -31,11 +31,14 @@ Example:
 """
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List, Dict
 
 from .task_models import TaskSpec, TaskStatus, TaskType
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["TaskQueue"]
 
@@ -82,6 +85,9 @@ class TaskQueue:
         - Pending tasks: Re-queued for processing
         - Processing tasks: Marked as REPROCESSING with incremented retry count
         """
+        import logging
+        logger = logging.getLogger(__name__)
+
         async with self._lock:
             # Recover pending
             if self._pending_file.exists():
@@ -91,8 +97,6 @@ class TaskQueue:
                         task = TaskSpec(**task_data)
                         await self._pending_queue.put(task)
                 except (json.JSONDecodeError, KeyError) as e:
-                    import logging
-                    logger = logging.getLogger(__name__)
                     logger.error(f"Failed to load pending tasks: {e}")
 
             # Recover processing (mark for reprocessing)
@@ -101,11 +105,17 @@ class TaskQueue:
                     data = json.loads(self._processing_file.read_text(encoding="utf-8"))
                     for task_data in data.get("tasks", []):
                         task = TaskSpec(**task_data)
+                        # Skip tasks that have exceeded max retries
+                        if task.retry_count >= task.max_retries:
+                            logger.warning(
+                                f"Skipping recovery of task {task.id}: "
+                                f"retry_count ({task.retry_count}) >= max_retries ({task.max_retries})"
+                            )
+                            continue
                         task.status = TaskStatus.REPROCESSING
                         task.retry_count += 1
                         await self._pending_queue.put(task)
                 except (json.JSONDecodeError, KeyError) as e:
-                    logger = logging.getLogger(__name__)
                     logger.error(f"Failed to load processing tasks: {e}")
 
             # Load completed for reference (optional)
@@ -116,7 +126,6 @@ class TaskQueue:
                         task = TaskSpec(**task_data)
                         self._completed[task.id] = task
                 except (json.JSONDecodeError, KeyError) as e:
-                    logger = logging.getLogger(__name__)
                     logger.error(f"Failed to load completed tasks: {e}")
 
     async def enqueue(self, task: TaskSpec) -> None:
@@ -125,9 +134,17 @@ class TaskQueue:
         Args:
             task: Task to enqueue
         """
+        # Skip if task is already completed (processed in real-time)
+        if task.id in self._completed:
+            logger.debug(f"Skipping enqueue task {task.id}: already completed")
+            return
+
+        logger.info(f"TaskQueue: Enqueueing task {task.id}")
         await self._pending_queue.put(task)
+        logger.debug(f"TaskQueue: Task {task.id} put in pending queue, queue size: {self._pending_queue.qsize()}")
         # Persist without holding lock to avoid deadlock
         await self._persist_pending_simple()
+        logger.info(f"TaskQueue: Task {task.id} enqueued and persisted")
 
     async def dequeue(self) -> Optional[TaskSpec]:
         """Dequeue a task for processing.
@@ -135,16 +152,24 @@ class TaskQueue:
         Returns:
             Next task to process, or None if queue is empty
         """
-        try:
-            task = await asyncio.wait_for(self._pending_queue.get(), timeout=0.1)
-            task.status = TaskStatus.PROCESSING
-            task.started_at = datetime.now(timezone.utc)
-            self._processing[task.id] = task
-            # Persist without holding lock to avoid deadlock
-            await self._persist_processing_simple()
-            return task
-        except asyncio.TimeoutError:
-            return None
+        while True:
+            try:
+                task = await asyncio.wait_for(self._pending_queue.get(), timeout=0.1)
+
+                # Skip if task is already completed (processed in real-time)
+                if task.id in self._completed:
+                    logger.debug(f"Skipping task {task.id}: already completed")
+                    continue
+
+                task.status = TaskStatus.PROCESSING
+                task.started_at = datetime.now(timezone.utc)
+                self._processing[task.id] = task
+                logger.debug(f"Task {task.id} dequeued and added to _processing")
+                # Persist without holding lock to avoid deadlock
+                await self._persist_processing_simple()
+                return task
+            except asyncio.TimeoutError:
+                return None
 
     async def complete(self, task_id: str, result: str) -> None:
         """Mark a task as completed.
@@ -153,8 +178,11 @@ class TaskQueue:
             task_id: Task ID to complete
             result: Task result (LLM response)
         """
+        logger.info(f"Task {task_id}: complete() STARTED")
         async with self._lock:
+            logger.info(f"Task {task_id}: complete() acquired lock, in _processing: {task_id in self._processing}")
             if task_id not in self._processing:
+                logger.warning(f"Task {task_id}: Not in _processing, cannot complete")
                 return
 
             task = self._processing[task_id]
@@ -164,8 +192,12 @@ class TaskQueue:
 
             del self._processing[task_id]
             self._completed[task_id] = task
+            logger.info(f"Task {task_id}: Moved from _processing to _completed")
+            # Note: Don't persist while holding lock - will persist after releasing
 
-            await self._persist_all_locked()
+        # Persist after releasing lock to avoid blocking other operations
+        await self._persist_all()
+        logger.info(f"Task {task_id}: complete() FINISHED")
 
     async def fail(self, task_id: str, error: str) -> None:
         """Mark a task as failed.
@@ -193,8 +225,10 @@ class TaskQueue:
             else:
                 del self._processing[task_id]
                 self._completed[task_id] = task
+            # Note: Don't persist while holding lock
 
-            await self._persist_all()
+        # Persist after releasing lock to avoid blocking other operations
+        await self._persist_all()
 
     async def mark_verified(self, task_id: str, success: bool, details: str = "") -> None:
         """Mark a task as verified.
@@ -204,11 +238,15 @@ class TaskQueue:
             success: Whether verification passed
             details: Verification details
         """
+        logger.info(f"Task {task_id}: mark_verified() STARTED (success={success})")
         async with self._lock:
+            logger.info(f"Task {task_id}: mark_verified() acquired lock, in _completed: {task_id in self._completed}")
             if task_id not in self._completed:
+                logger.warning(f"Task {task_id}: Not in _completed, cannot mark verified")
                 return
 
             task = self._completed[task_id]
+            logger.info(f"Task {task_id}: task.status={task.status.value}")
             if task.status == TaskStatus.WAITING_VERIFICATION:
                 task.verification_result = success
                 task.verification_details = details
@@ -219,12 +257,17 @@ class TaskQueue:
                     task.status = TaskStatus.FAILED
                     task.last_error = details
 
-                await self._persist_all()
+                logger.info(f"Task {task_id}: status updated, will persist after releasing lock")
+            # Note: Don't persist while holding lock - will persist after releasing
+
+        # Persist after releasing lock to avoid blocking other operations
+        await self._persist_all()
+        logger.info(f"Task {task_id}: mark_verified() FINISHED")
 
     async def get_task(self, task_id: str) -> Optional[TaskSpec]:
         """Get a task by ID.
 
-        Searches processing and completed caches.
+        Searches pending, processing and completed caches.
 
         Args:
             task_id: Task ID to get
@@ -233,10 +276,30 @@ class TaskQueue:
             TaskSpec if found, None otherwise
         """
         async with self._lock:
+            # Search in processing
             if task_id in self._processing:
                 return self._processing[task_id]
+            # Search in completed
             if task_id in self._completed:
                 return self._completed[task_id]
+
+            # Search in pending queue
+            pending_tasks = []
+            while True:
+                try:
+                    task = self._pending_queue.get_nowait()
+                    pending_tasks.append(task)
+                    if task.id == task_id:
+                        # Found it, re-queue all tasks and return
+                        for t in pending_tasks:
+                            self._pending_queue.put_nowait(t)
+                        return task
+                except asyncio.QueueEmpty:
+                    break
+            # Re-queue all pending tasks
+            for task in pending_tasks:
+                self._pending_queue.put_nowait(task)
+
             return None
 
     async def list_pending(self) -> List[TaskSpec]:
@@ -265,7 +328,7 @@ class TaskQueue:
         async with self._lock:
             sorted_completed = sorted(
                 self._completed.values(),
-                key=lambda t: t.completed_at or datetime.min,
+                key=lambda t: t.completed_at.replace(tzinfo=None) if t.completed_at else datetime.min,
                 reverse=True,
             )
             return sorted_completed[:limit]
@@ -305,7 +368,7 @@ class TaskQueue:
             if len(self._completed) > 100:
                 sorted_tasks = sorted(
                     self._completed.values(),
-                    key=lambda t: t.completed_at or datetime.min,
+                    key=lambda t: t.completed_at.replace(tzinfo=None) if t.completed_at else datetime.min,
                     reverse=True,
                 )
                 to_remove = sorted_tasks[100:]
@@ -346,27 +409,26 @@ class TaskQueue:
     async def _persist_all(self) -> None:
         """Persist all task states to disk.
 
-        This method acquires the lock internally, so it should NOT be called
-        from within a lock context. Call _persist_all_locked() instead if
-        the lock is already held.
+        This method prepares data while holding the lock, then releases
+        the lock before doing async file I/O to prevent blocking.
         """
+        # Prepare data while holding lock
         async with self._lock:
-            await self._persist_all_locked()
+            pending_data, processing_data, completed_data = self._prepare_persist_data_sync()
 
-    async def _persist_all_locked(self) -> None:
-        """Persist all task states to disk (lock must be held by caller)."""
-        # Prepare all data while holding lock
-        pending_data, processing_data, completed_data = await self._prepare_persist_data()
-
-        # Write to disk without holding lock (prevents deadlock)
+        # Write to disk WITHOUT holding lock (prevents blocking)
         await asyncio.gather(
             self._atomic_write(self._pending_file, pending_data),
             self._atomic_write(self._processing_file, processing_data),
             self._atomic_write(self._completed_file, completed_data),
         )
 
-    async def _prepare_persist_data(self) -> tuple:
-        """Prepare persistence data (lock must be held by caller)."""
+    def _prepare_persist_data_sync(self) -> tuple:
+        """Prepare persistence data synchronously (lock must be held by caller).
+
+        This is a synchronous version that doesn't use await, so it can be
+        called while holding the lock without blocking other operations.
+        """
         # Drain pending queue to snapshot
         pending_tasks = []
         while True:
@@ -390,7 +452,7 @@ class TaskQueue:
         if len(completed_values) > 100:
             sorted_completed = sorted(
                 completed_values,
-                key=lambda t: t.completed_at or datetime.min,
+                key=lambda t: t.completed_at.replace(tzinfo=None) if t.completed_at else datetime.min,
                 reverse=True,
             )
             completed_values = sorted_completed[:100]
@@ -400,12 +462,11 @@ class TaskQueue:
 
     async def _atomic_write(self, path: Path, data: dict) -> None:
         """Write data to file atomically (temp file + rename)."""
+        import asyncio
         tmp_path = path.with_suffix(".tmp")
-        tmp_path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
-        )
-        tmp_path.replace(path)
+        content = json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True)
+        # Run synchronous file I/O in thread pool to avoid blocking event loop
+        await asyncio.to_thread(_write_file_atomic, tmp_path, content, path)
 
     async def clear_all(self) -> None:
         """Clear all tasks (use with caution)."""
@@ -414,5 +475,43 @@ class TaskQueue:
             self._completed.clear()
             # Clear pending queue
             while not self._pending_queue.empty():
-                self._pending_queue.get_nowait()
-            await self._persist_all()
+                try:
+                    self._pending_queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+        # Persist to disk (simple approach - write empty lists)
+        import json
+        from pathlib import Path
+
+        for fname in ['pending_tasks.json', 'processing_tasks.json', 'completed_tasks.json']:
+            fpath = self._pending_file.parent / fname
+            try:
+                data = {"version": 1, "tasks": []}
+                await asyncio.to_thread(
+                    lambda p=fpath: p.write_text(json.dumps(data, indent=2), encoding='utf-8')
+                )
+            except Exception:
+                pass
+
+    async def remove_completed(self, task_id: str) -> bool:
+        """Remove a completed task from the completed cache.
+
+        Args:
+            task_id: Task ID to remove
+
+        Returns:
+            True if task was removed, False if not found
+        """
+        async with self._lock:
+            if task_id in self._completed:
+                del self._completed[task_id]
+                await self._persist_completed()
+                return True
+            return False
+
+
+def _write_file_atomic(tmp_path: Path, content: str, final_path: Path) -> None:
+    """Synchronous file write helper for atomic writes."""
+    tmp_path.write_text(content, encoding="utf-8")
+    tmp_path.replace(final_path)

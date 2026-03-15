@@ -345,7 +345,16 @@ class AgentInstanceManager:
         async with self._lock:
             # Check cache first
             if instance_id in self._agent_cache:
-                return self._agent_cache[instance_id]
+                cached_agent = self._agent_cache[instance_id]
+                # Update agent's channel/user/session context if provided
+                # This is crucial for skill context injection (e.g., cron job creation)
+                if channel is not None:
+                    cached_agent._channel = channel
+                if user_id is not None:
+                    cached_agent._user_id = user_id
+                if session_id is not None:
+                    cached_agent._session_id = session_id
+                return cached_agent
 
             # Get agent instance
             instance = self._instances.get(instance_id)
