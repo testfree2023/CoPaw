@@ -17,6 +17,7 @@ import AgentInstancesPage from "../../pages/Agent/Instances";
 import ModelsPage from "../../pages/Settings/Models";
 import EnvironmentsPage from "../../pages/Settings/Environments";
 import RulesPage from "../../pages/Settings/Rules";
+import SecurityPage from "../../pages/Settings/Security";
 
 const { Content } = Layout;
 
@@ -34,6 +35,7 @@ const pathToKey: Record<string, string> = {
   "/models": "models",
   "/environments": "environments",
   "/rules": "rules",
+  "/security": "security",
 };
 
 export default function MainLayout() {
@@ -68,6 +70,7 @@ export default function MainLayout() {
               <Route path="/models" element={<ModelsPage />} />
               <Route path="/environments" element={<EnvironmentsPage />} />
               <Route path="/rules" element={<RulesPage />} />
+              <Route path="/security" element={<SecurityPage />} />
               <Route path="/agent-instances" element={<AgentInstancesPage />} />
               <Route path="/agent-config" element={<AgentConfigPage />} />
               {/* Redirect old /personas route to /agent-instances */}

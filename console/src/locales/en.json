@@ -38,7 +38,8 @@
     "models": "Models",
     "environments": "Environments",
     "rules": "Rules",
-    "personas": "Personas"
+    "personas": "Personas",
+    "security": "Security"
   },
   "workspace": {
     "title": "WorkSpace",
@@ -454,5 +455,31 @@
     "createSuccess": "Agent instance created",
     "saveError": "Failed to save agent instance",
     "fetchError": "Failed to fetch agent instances"
+  },
+  "security": {
+    "title": "Security Guard System",
+    "subtitle": "View security rules status and violation logs",
+    "totalRules": "Total Rules",
+    "enabledRules": "Enabled Rules",
+    "violationsToday": "Violations Today",
+    "violationsTotal": "Total Violations",
+    "rulesTab": "Security Rules",
+    "violationsTab": "Violation Logs",
+    "ruleName": "Rule Name",
+    "category": "Category",
+    "severity": "Severity",
+    "scope": "Scope",
+    "status": "Status",
+    "patterns": "Patterns",
+    "triggeredAt": "Time",
+    "triggeredRule": "Triggered Rule",
+    "matchedPattern": "Matched Pattern",
+    "inputContent": "Input Content",
+    "channel": "Channel",
+    "user": "User",
+    "action": "Action",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "blocked": "Blocked"
   }
 }

@@ -20,6 +20,7 @@ import {
   UserRound,
   FileText,
   ListTodo,
+  Shield,
 } from "lucide-react";
 
 const { Sider } = Layout;
@@ -36,6 +37,8 @@ const keyToPath: Record<string, string> = {
   "agent-instances": "/agent-instances",
   "agent-config": "/agent-config",
   rules: "/rules",
+  personas: "/personas",
+  security: "/security",
   models: "/models",
   environments: "/environments",
 };
@@ -153,6 +156,11 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
           key: "rules",
           label: t("nav.rules"),
           icon: <FileText size={16} />,
+        },
+        {
+          key: "security",
+          label: t("nav.security", "Security"),
+          icon: <Shield size={16} />,
         },
       ],
     },

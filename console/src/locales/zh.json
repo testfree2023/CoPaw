@@ -37,7 +37,8 @@
     "models": "模型",
     "environments": "环境变量",
     "rules": "规则",
-    "personas": "角色"
+    "personas": "角色",
+    "security": "安全守卫"
   },
   "workspace": {
     "title": "工作区",
@@ -453,5 +454,31 @@
     "createSuccess": "智能体实例已创建",
     "saveError": "保存智能体实例失败",
     "fetchError": "获取智能体实例失败"
+  },
+  "security": {
+    "title": "安全守卫系统",
+    "subtitle": "查看系统安全规则状态和违规记录",
+    "totalRules": "规则总数",
+    "enabledRules": "已启用规则",
+    "violationsToday": "今日违规",
+    "violationsTotal": "历史违规",
+    "rulesTab": "安全规则",
+    "violationsTab": "违规记录",
+    "ruleName": "规则名称",
+    "category": "分类",
+    "severity": "严重级别",
+    "scope": "作用域",
+    "status": "状态",
+    "patterns": "匹配模式",
+    "triggeredAt": "时间",
+    "triggeredRule": "触发规则",
+    "matchedPattern": "匹配模式",
+    "inputContent": "输入内容",
+    "channel": "渠道",
+    "user": "用户",
+    "action": "处理",
+    "enabled": "启用",
+    "disabled": "禁用",
+    "blocked": "已拦截"
   }
 }
