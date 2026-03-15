@@ -38,6 +38,7 @@ try:
     from .runner.task_queue import TaskQueue
     from .runner.task_processor import TaskProcessor, set_progress_broadcaster
     from .routers.task_ws import router as task_ws_router, set_task_queue as set_ws_task_queue, TaskProgressBroadcaster
+    from ..security import SecurityGuardManager
     ENHANCEMENTS_AVAILABLE = True
 except ImportError:
     ENHANCEMENTS_AVAILABLE = False
@@ -51,6 +52,7 @@ except ImportError:
     task_ws_router = None
     set_ws_task_queue = None
     TaskProgressBroadcaster = None
+    SecurityGuardManager = None
 
 # Apply log level on load so reload child process gets same level as CLI.
 logger = setup_logger(os.environ.get(LOG_LEVEL_ENV, "info"))
@@ -129,6 +131,15 @@ async def lifespan(app: FastAPI):  # pylint: disable=too-many-statements
     enhancements_enabled = ENHANCEMENTS_AVAILABLE
     if enhancements_enabled:
         try:
+            # Security Guard Manager
+            security_guard_manager = SecurityGuardManager()
+            await security_guard_manager.load()
+            runner.set_security_guard_manager(security_guard_manager)
+            # Set for API router
+            from .routers.security import set_security_guard_manager as set_api_security_guard_manager
+            set_api_security_guard_manager(security_guard_manager)
+            logger.info("Security guard manager initialized")
+
             # Rule Manager
             rule_manager = RuleManager()
             await rule_manager.load()
@@ -222,6 +233,7 @@ async def lifespan(app: FastAPI):  # pylint: disable=too-many-statements
     app.state.mcp_watcher = mcp_watcher
     # Enhancement: expose enhancement managers (PR #6)
     if enhancements_enabled:
+        app.state.security_guard_manager = security_guard_manager
         app.state.rule_manager = rule_manager
         app.state.persona_manager = persona_manager
         app.state.task_queue = task_queue
@@ -230,8 +242,12 @@ async def lifespan(app: FastAPI):  # pylint: disable=too-many-statements
     try:
         yield
     finally:
-        # Enhancement: stop task processor (PR #6)
+        # Enhancement: save security guard config and stop task processor (PR #6)
         if enhancements_enabled:
+            try:
+                await security_guard_manager.save()
+            except Exception:
+                pass
             try:
                 await task_processor.stop()
             except Exception:

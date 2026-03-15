@@ -14,6 +14,7 @@ from .rules import router as rules_router
 from .personas import router as personas_router
 from .agent_instances import router as agent_instances_router
 from .tasks import router as tasks_router
+from .security import router as security_router
 from ..crons.api import router as cron_router
 from ..runner.api import router as runner_router
 from .console import router as console_router
@@ -37,5 +38,6 @@ router.include_router(workspace_router)
 router.include_router(envs_router)
 router.include_router(agent_instances_router)
 router.include_router(tasks_router)
+router.include_router(security_router)
 
 __all__ = ["router"]

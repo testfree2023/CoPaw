@@ -110,6 +110,14 @@ class AgentRunner(Runner):
         """
         self._agent_router = router
 
+    def set_security_guard_manager(self, manager):
+        """Set security guard manager for security rules.
+
+        Args:
+            manager: SecurityGuardManager instance
+        """
+        self._security_guard_manager = manager
+
     def _create_agent(
         self,
         env_context,
@@ -150,6 +158,8 @@ class AgentRunner(Runner):
             session_id=session_id,
             # Multi-agent: Pass agent instance manager
             agent_instance_manager=self._agent_instance_manager,
+            # Security guard: Pass security guard manager
+            security_guard_manager=self._security_guard_manager,
         )
 
         return agent

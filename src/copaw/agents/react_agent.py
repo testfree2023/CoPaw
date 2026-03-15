@@ -59,6 +59,10 @@ except ImportError:
     AgentInstanceManager = None
     AgentRouter = None
     RoutingResult = None
+try:
+    from ..security import SecurityGuardManager
+except ImportError:
+    SecurityGuardManager = None
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +98,8 @@ class CoPawAgent(ReActAgent):
         # Multi-agent parameters (Phase 1)
         agent_instance_manager: Optional["AgentInstanceManager"] = None,
         is_expert_agent: bool = False,  # True if this is an expert agent (not PM)
+        # Security guard parameters
+        security_guard_manager: Optional["SecurityGuardManager"] = None,
     ):
         """Initialize CoPawAgent.
 
@@ -116,6 +122,7 @@ class CoPawAgent(ReActAgent):
             session_id: Session identifier for context-aware processing
             agent_instance_manager: Optional AgentInstanceManager for multi-agent routing
             is_expert_agent: True if this is an expert agent (not the main PM agent)
+            security_guard_manager: Optional SecurityGuardManager for security rules (enhancement)
         """
         self._env_context = env_context
         self._max_input_length = max_input_length
@@ -127,6 +134,7 @@ class CoPawAgent(ReActAgent):
         self._session_id = session_id
         self._rule_manager = rule_manager
         self._persona_manager = persona_manager
+        self._security_guard_manager = security_guard_manager
 
         # Multi-agent: Store agent instance manager (Phase 1)
         self._agent_instance_manager = agent_instance_manager
@@ -290,6 +298,16 @@ class CoPawAgent(ReActAgent):
                     logger.debug(f"Injected {len(rules)} rules")
             except Exception as e:
                 logger.warning(f"Failed to inject rules: {e}")
+
+        # Enhancement: Inject security guard rules
+        if self._security_guard_manager:
+            try:
+                security_rules = self._security_guard_manager.get_rules_text()
+                if security_rules:
+                    sys_prompt += security_rules
+                    logger.debug("Injected security guard rules")
+            except Exception as e:
+                logger.warning(f"Failed to inject security guard rules: {e}")
 
         # Add environment context
         if self._env_context is not None:
